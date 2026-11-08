@@ -1,3 +1,14 @@
+[![answer-crawler-check by Synapse](https://raw.githubusercontent.com/synapsereality/answer-crawler-check/main/.github/assets/banner.png)](https://synapsereality.io/open-source/answer-crawler-check/)
+
+[![npm version](https://img.shields.io/npm/v/answer-crawler-check)](https://www.npmjs.com/package/answer-crawler-check)
+[![CI](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml/badge.svg)](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/synapsereality/answer-crawler-check/blob/main/LICENSE)
+
+[Docs](https://synapsereality.io/open-source/answer-crawler-check/) |
+[synapsereality.io](https://synapsereality.io) |
+[Synapse open source](https://synapsereality.io/open-source/) |
+[npm](https://www.npmjs.com/package/answer-crawler-check)
+
 # answer-crawler-check
 
 Fails your CI job when robots.txt blocks an AI answer crawler from any page in
@@ -34,7 +45,7 @@ answer-crawler-check: FAILED, 2 problem(s)
 
 Each blocked URL comes with the rule that blocked it and its line number. The
 exit code is 0 when everything is allowed, 1 when something is blocked, and 2
-for bad input.
+for a bad command line. [Exit codes](#exit-codes) has the details.
 
 Single-URL checkers look at `/` or one page you paste in. That misses a
 `Disallow: /docs/` in a group you forgot about, and a wildcard rule such as
@@ -123,7 +134,13 @@ npm run build
 answer-crawler-check dist/sitemap-index.xml --site-dir dist
 ```
 
-## GitHub Actions
+## Run it in CI
+
+Each job below fails when a crawler is blocked. The jobs that check a build
+assume `npm run build` writes the site to `dist/`. Change the paths to match
+your build.
+
+### GitHub Actions
 
 ```yaml
 - uses: actions/checkout@v4
@@ -151,6 +168,98 @@ jobs:
 ```
 
 The action runs on the runner's own Node (20 or later) and installs nothing.
+
+### GitLab CI
+
+In `.gitlab-ci.yml`, check the build on every pipeline:
+
+```yaml
+answer-crawlers:
+  image: node:22-slim
+  script:
+    - npm ci
+    - npm run build
+    - npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist --json crawlers.json
+  artifacts:
+    when: always
+    paths:
+      - crawlers.json
+```
+
+`when: always` keeps the JSON report when the job fails, which is when you
+need it. To check the live site instead, add a job that runs only in
+scheduled pipelines, and create the schedule under Build > Pipeline
+schedules:
+
+```yaml
+answer-crawlers-live:
+  image: node:22-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - npx --yes answer-crawler-check@0.1.1 https://example.com/sitemap-index.xml --require-named
+```
+
+### Bitbucket Pipelines
+
+In `bitbucket-pipelines.yml`:
+
+```yaml
+image: node:22-slim
+
+pipelines:
+  default:
+    - step:
+        name: Check AI answer crawler access
+        script:
+          - npm ci
+          - npm run build
+          - npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist
+  custom:
+    answer-crawlers-live:
+      - step:
+          name: Check the live site
+          script:
+            - npx --yes answer-crawler-check@0.1.1 https://example.com/sitemap-index.xml --require-named
+```
+
+A custom pipeline only runs when you start it or schedule it. To run
+`answer-crawlers-live` every week, go to Pipelines, then Schedules, and pick it
+there.
+
+### Any other CI: a shell step
+
+Jenkins, CircleCI, Drone, a Makefile or a git hook: anything that runs a shell
+command and reads its exit code. You need Node 20 or later.
+
+```bash
+npm run build
+npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist
+```
+
+To tell a blocked crawler apart from a check that couldn't run:
+
+```bash
+status=0
+npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist || status=$?
+case $status in
+  0) echo "every answer crawler can reach every page" ;;
+  1) echo "a crawler is blocked, or the check hit a problem. See the output above."; exit 1 ;;
+  *) echo "answer-crawler-check did not run: check the command line"; exit 2 ;;
+esac
+```
+
+### Exit codes
+
+| code | meaning |
+|---|---|
+| 0 | Every chosen crawler can fetch every URL. With `--report-only`, any check that ran gives 0. |
+| 1 | At least one problem, and the report lists each one. A crawler is blocked from a URL, or has no group of its own under `--require-named`. A sitemap or the `--robots` file couldn't be read, a robots.txt was over 512 KiB, or there were no URLs to check. A crash also gives 1, for example a `--json` path that can't be written. |
+| 2 | The command line was wrong: an unknown flag, no sitemap or `--url`, a bad `--max-urls`, or a `--list` file that couldn't be read. Nothing was checked. |
+
+`npx --yes` installs the package without asking. Pin the version, as above, so
+a new release can't change a passing build. With the package in your
+`devDependencies`, `npx answer-crawler-check` uses that copy instead.
 
 ## Install from source
 

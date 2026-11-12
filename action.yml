@@ -1,5 +1,5 @@
-name: answer-crawler-check
-description: Fail the job when robots.txt blocks an AI answer crawler from any URL in your sitemap.
+name: Answer Crawler Check
+description: Fail the job when robots.txt blocks an AI answer crawler from any page in your sitemap. Prints the rule and the line.
 author: Synapse Research Ltd
 branding:
   icon: check-circle

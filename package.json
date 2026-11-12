@@ -1,6 +1,6 @@
 {
   "name": "answer-crawler-check",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fail CI when robots.txt blocks an AI answer crawler (OAI-SearchBot, Claude-SearchBot, PerplexityBot and more) from any page in your sitemap.",
   "type": "module",
   "bin": {

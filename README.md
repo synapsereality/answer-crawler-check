@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/answer-crawler-check)](https://www.npmjs.com/package/answer-crawler-check)
 [![CI](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml/badge.svg)](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Answer%20Crawler%20Check-2ea44f?logo=github)](https://github.com/marketplace/actions/answer-crawler-check)
 [![MIT licence](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/synapsereality/answer-crawler-check/blob/main/LICENSE)
 
 [Docs](https://synapsereality.io/open-source/answer-crawler-check/) |
@@ -145,7 +146,7 @@ your build.
 ```yaml
 - uses: actions/checkout@v4
 - run: npm ci && npm run build
-- uses: synapsereality/answer-crawler-check@v0.1.1
+- uses: synapsereality/answer-crawler-check@v0.1.2
   with:
     sitemap: dist/sitemap-index.xml
     site-dir: dist
@@ -161,13 +162,24 @@ jobs:
   crawlers:
     runs-on: ubuntu-latest
     steps:
-      - uses: synapsereality/answer-crawler-check@v0.1.1
+      - uses: synapsereality/answer-crawler-check@v0.1.2
         with:
           sitemap: https://example.com/sitemap-index.xml
           require-named: "true"
 ```
 
 The action runs on the runner's own Node (20 or later) and installs nothing.
+It is listed on the GitHub Marketplace as
+[Answer Crawler Check](https://github.com/marketplace/actions/answer-crawler-check).
+
+| Input | Default | What it does |
+|---|---|---|
+| `sitemap` | required | Sitemap URLs or file paths, separated by spaces. Indexes and .gz files are followed. |
+| `agents` | `answer` | `answer`, `answer-extended`, `all`, or a list of crawler names separated by commas. |
+| `robots` | empty | A robots.txt file or URL to use for every site. Without it, each site's own file is fetched. |
+| `site-dir` | empty | A local build folder such as `dist`. Sitemaps and robots.txt are read from it when present. |
+| `require-named` | `false` | Set to `"true"` to fail when a crawler has no `User-agent` group of its own. |
+| `args` | empty | Extra command line flags, for example `--max-urls 5000`. |
 
 ### GitLab CI
 
@@ -179,7 +191,7 @@ answer-crawlers:
   script:
     - npm ci
     - npm run build
-    - npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist --json crawlers.json
+    - npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist --json crawlers.json
   artifacts:
     when: always
     paths:
@@ -197,7 +209,7 @@ answer-crawlers-live:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   script:
-    - npx --yes answer-crawler-check@0.1.1 https://example.com/sitemap-index.xml --require-named
+    - npx --yes answer-crawler-check@0.1.2 https://example.com/sitemap-index.xml --require-named
 ```
 
 ### Bitbucket Pipelines
@@ -214,13 +226,13 @@ pipelines:
         script:
           - npm ci
           - npm run build
-          - npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist
+          - npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist
   custom:
     answer-crawlers-live:
       - step:
           name: Check the live site
           script:
-            - npx --yes answer-crawler-check@0.1.1 https://example.com/sitemap-index.xml --require-named
+            - npx --yes answer-crawler-check@0.1.2 https://example.com/sitemap-index.xml --require-named
 ```
 
 A custom pipeline only runs when you start it or schedule it. To run
@@ -234,14 +246,14 @@ command and reads its exit code. You need Node 20 or later.
 
 ```bash
 npm run build
-npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist
+npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist
 ```
 
 To tell a blocked crawler apart from a check that couldn't run:
 
 ```bash
 status=0
-npx --yes answer-crawler-check@0.1.1 dist/sitemap-index.xml --site-dir dist || status=$?
+npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist || status=$?
 case $status in
   0) echo "every answer crawler can reach every page" ;;
   1) echo "a crawler is blocked, or the check hit a problem. See the output above."; exit 1 ;;

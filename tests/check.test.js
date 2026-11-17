@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { loadList } from '../src/agents.js'
-import { check, format, robotsState } from '../src/check.js'
+import { check, format, robotsState, withSiteDir } from '../src/check.js'
 import { parseSitemap } from '../src/sitemap.js'
 
 const list = loadList()
@@ -47,6 +48,25 @@ test('parseSitemap reads urlset, index, namespaces, entities and CDATA', () => {
   })
   assert.equal(parseSitemap('<sm:sitemapindex><sm:sitemap><sm:loc>u</sm:loc></sm:sitemap></sm:sitemapindex>').kind, 'index')
   assert.deepEqual(parseSitemap('<urlset><url><loc><![CDATA[https://e.com/b]]></loc></url></urlset>').locs, ['https://e.com/b'])
+  // CDATA is literal, so an entity inside it stays as written.
+  assert.deepEqual(parseSitemap('<urlset><url><loc><![CDATA[https://e.com/?x=1&amp;y=2]]></loc></url></urlset>').locs, ['https://e.com/?x=1&amp;y=2'])
+})
+
+test('--site-dir never reads a file outside the build folder', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'dist'))
+  writeFileSync(join(dir, 'secret.xml'), 'outside')
+  writeFileSync(join(dir, 'dist', 'inside.xml'), 'inside')
+  const seen = []
+  const load = withSiteDir(join(dir, 'dist'), async (source) => {
+    seen.push(source)
+    return { status: 404, text: '' }
+  })
+  await load('https://example.invalid/inside.xml')
+  await load('https://example.invalid/..%2fsecret.xml')
+  await load('https://example.invalid/%E0%A4%A')
+  assert.deepEqual(seen, [join(dir, 'dist', 'inside.xml'), 'https://example.invalid/..%2fsecret.xml', 'https://example.invalid/%E0%A4%A'])
 })
 
 test('robotsState follows RFC 9309', () => {
@@ -131,8 +151,9 @@ test('a broken sitemap is a problem, and no URLs at all is a problem', async () 
   assert.match(r.problems.join('\n'), /no page URLs/)
 })
 
-test('--site-dir reads the local build and never touches the network', async () => {
+test('--site-dir reads the local build and never touches the network', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
   writeFileSync(join(dir, 'sitemap-index.xml'), '<sitemapindex><sitemap><loc>https://example.invalid/sitemap-0.xml</loc></sitemap></sitemapindex>')
   writeFileSync(join(dir, 'sitemap-0.xml'), '<urlset><url><loc>https://example.invalid/</loc></url><url><loc>https://example.invalid/p/</loc></url></urlset>')
   writeFileSync(join(dir, 'robots.txt'), 'User-agent: *\nAllow: /\nUser-agent: ChatGPT-User\nDisallow: /p/\n')
@@ -143,7 +164,7 @@ test('--site-dir reads the local build and never touches the network', async () 
 
 function cli(args) {
   return new Promise((ok) => {
-    execFile(process.execPath, [new URL('../bin/answer-crawler-check.js', import.meta.url).pathname, ...args], (err, stdout, stderr) =>
+    execFile(process.execPath, [fileURLToPath(new URL('../bin/answer-crawler-check.js', import.meta.url)), ...args], (err, stdout, stderr) =>
       ok({ code: err ? err.code : 0, stdout, stderr }))
   })
 }
@@ -158,6 +179,22 @@ test('CLI exit codes: 0 open, 1 blocked, 2 bad input, report-only', async () => 
   assert.equal((await cli([`${base}/sitemap.xml`, '--report-only'])).code, 0)
   assert.equal((await cli([])).code, 2)
   assert.equal((await cli(['--bogus'])).code, 2)
+})
+
+test('CLI --robots FILE tests a local robots.txt against the sitemap pages, as the pre-commit hook does', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const robots = join(dir, 'robots.txt')
+  site('User-agent: *\nAllow: /\n')
+  writeFileSync(robots, 'User-agent: *\nAllow: /\nUser-agent: PerplexityBot\nDisallow: /docs/\n')
+  const bad = await cli(['--robots', robots, `${base}/sitemap.xml`])
+  assert.equal(bad.code, 1)
+  assert.match(bad.stdout, /local file/)
+  assert.match(bad.stdout, /BLOCKED PerplexityBot {2}1 URL\(s\)/)
+  site('User-agent: *\nDisallow: /\n')
+  writeFileSync(robots, 'User-agent: *\nAllow: /\n')
+  assert.equal((await cli(['--robots', robots, `${base}/sitemap.xml`])).code, 0)
+  assert.equal((await cli(['--robots', join(dir, 'missing.txt'), `${base}/sitemap.xml`])).code, 1)
 })
 
 test('CLI --json - prints the report as JSON on stdout', async () => {

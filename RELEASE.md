@@ -79,7 +79,9 @@ the workflow.
 
 9. For 0.1.0 the package is already on npm from step 7. The workflow sees that
    and skips the upload. For later versions, bump `version` in `package.json`
-   and `CITATION.cff`, commit and push.
+   and `CITATION.cff`, the `--version` line in `bin/answer-crawler-check.js`
+   and every pinned version in `README.md`. `npm test` fails if one is missed.
+   Commit and push.
 10. On GitHub: Releases, Draft a new release. Tag `v0.1.0` (create it on
     publish), target `main`, title `v0.1.0`.
 

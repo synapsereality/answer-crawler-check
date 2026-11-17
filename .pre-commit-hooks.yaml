@@ -1,0 +1,7 @@
+- id: answer-crawler-check
+  name: answer-crawler-check
+  description: Fail the commit when robots.txt blocks an AI answer crawler from any page in your sitemap.
+  entry: answer-crawler-check
+  language: node
+  files: '(^|/)robots\.txt$'
+  pass_filenames: false

@@ -160,6 +160,21 @@ test('CLI exit codes: 0 open, 1 blocked, 2 bad input, report-only', async () => 
   assert.equal((await cli(['--bogus'])).code, 2)
 })
 
+test('CLI --robots FILE tests a local robots.txt against the sitemap pages, as the pre-commit hook does', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  const robots = join(dir, 'robots.txt')
+  site('User-agent: *\nAllow: /\n')
+  writeFileSync(robots, 'User-agent: *\nAllow: /\nUser-agent: PerplexityBot\nDisallow: /docs/\n')
+  const bad = await cli(['--robots', robots, `${base}/sitemap.xml`])
+  assert.equal(bad.code, 1)
+  assert.match(bad.stdout, /local file/)
+  assert.match(bad.stdout, /BLOCKED PerplexityBot {2}1 URL\(s\)/)
+  site('User-agent: *\nDisallow: /\n')
+  writeFileSync(robots, 'User-agent: *\nAllow: /\n')
+  assert.equal((await cli(['--robots', robots, `${base}/sitemap.xml`])).code, 0)
+  assert.equal((await cli(['--robots', join(dir, 'missing.txt'), `${base}/sitemap.xml`])).code, 1)
+})
+
 test('CLI --json - prints the report as JSON on stdout', async () => {
   site('User-agent: *\nAllow: /\n')
   const r = await cli([`${base}/sitemap.xml`, '--json', '-', '--agents', 'GPTBot'])

@@ -146,7 +146,7 @@ your build.
 ```yaml
 - uses: actions/checkout@v4
 - run: npm ci && npm run build
-- uses: synapsereality/answer-crawler-check@v0.1.2
+- uses: synapsereality/answer-crawler-check@v0.1.3
   with:
     sitemap: dist/sitemap-index.xml
     site-dir: dist
@@ -162,7 +162,7 @@ jobs:
   crawlers:
     runs-on: ubuntu-latest
     steps:
-      - uses: synapsereality/answer-crawler-check@v0.1.2
+      - uses: synapsereality/answer-crawler-check@v0.1.3
         with:
           sitemap: https://example.com/sitemap-index.xml
           require-named: "true"
@@ -191,7 +191,7 @@ answer-crawlers:
   script:
     - npm ci
     - npm run build
-    - npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist --json crawlers.json
+    - npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist --json crawlers.json
   artifacts:
     when: always
     paths:
@@ -209,7 +209,7 @@ answer-crawlers-live:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   script:
-    - npx --yes answer-crawler-check@0.1.2 https://example.com/sitemap-index.xml --require-named
+    - npx --yes answer-crawler-check@0.1.3 https://example.com/sitemap-index.xml --require-named
 ```
 
 ### Bitbucket Pipelines
@@ -226,18 +226,52 @@ pipelines:
         script:
           - npm ci
           - npm run build
-          - npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist
+          - npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist
   custom:
     answer-crawlers-live:
       - step:
           name: Check the live site
           script:
-            - npx --yes answer-crawler-check@0.1.2 https://example.com/sitemap-index.xml --require-named
+            - npx --yes answer-crawler-check@0.1.3 https://example.com/sitemap-index.xml --require-named
 ```
 
 A custom pipeline only runs when you start it or schedule it. To run
 `answer-crawlers-live` every week, go to Pipelines, then Schedules, and pick it
 there.
+
+### pre-commit
+
+The repo ships a [pre-commit](https://pre-commit.com) hook. It runs when a
+commit changes a file named `robots.txt`, and tests that file against every
+page in your live sitemap. In `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/synapsereality/answer-crawler-check
+    rev: v0.1.3
+    hooks:
+      - id: answer-crawler-check
+        args: [--robots, public/robots.txt, https://example.com/sitemap.xml]
+```
+
+`--robots` is the path to your robots.txt from the root of the repo, and the
+sitemap gives the list of pages. The hook gets no file names from pre-commit,
+so both go in `args`. Other flags work there too, such as `--require-named`.
+When `node` and `npm` are on your PATH, pre-commit uses them, and that Node
+must be 20 or later. To run the hook once on every file:
+
+```bash
+pre-commit run answer-crawler-check --all-files
+```
+
+The hook needs network access to read a live sitemap. Without it, the sitemap
+can't be read and the commit fails. To check offline, run it on a build with
+`--site-dir`. It reads the sitemaps and robots.txt from the build folder, so
+build first, or it checks the old copy:
+
+```yaml
+        args: [dist/sitemap-index.xml, --site-dir, dist]
+```
 
 ### Any other CI: a shell step
 
@@ -246,14 +280,14 @@ command and reads its exit code. You need Node 20 or later.
 
 ```bash
 npm run build
-npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist
+npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist
 ```
 
 To tell a blocked crawler apart from a check that couldn't run:
 
 ```bash
 status=0
-npx --yes answer-crawler-check@0.1.2 dist/sitemap-index.xml --site-dir dist || status=$?
+npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist || status=$?
 case $status in
   0) echo "every answer crawler can reach every page" ;;
   1) echo "a crawler is blocked, or the check hit a problem. See the output above."; exit 1 ;;
@@ -289,8 +323,9 @@ No dependencies. Node 20 or later.
 npm test
 ```
 
-33 tests: the robots.txt rules above, sitemap indexes and gzip, the 4xx and 5xx
-cases, `--site-dir`, and the CLI exit codes. They use a local HTTP server.
+37 tests: the robots.txt rules above, sitemap indexes and gzip, the 4xx and 5xx
+cases, `--site-dir`, `--robots`, the CLI exit codes and the pre-commit hook.
+They use a local HTTP server.
 
 ## What it doesn't check
 

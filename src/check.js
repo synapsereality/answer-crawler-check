@@ -1,6 +1,6 @@
 // The check itself: every sitemap URL against every chosen crawler.
 import { existsSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { describe, resolveAgents } from './agents.js'
 import { load as defaultLoad } from './fetch.js'
 import { allows, names, parseRobots } from './robots.js'
@@ -15,13 +15,27 @@ const isUrl = (s) => /^https?:\/\//i.test(s)
  */
 export function withSiteDir(siteDir, load = defaultLoad) {
   if (!siteDir) return load
+  const root = resolve(siteDir)
   return async (source, opts) => {
     if (isUrl(source)) {
-      const local = join(siteDir, decodeURIComponent(new URL(source).pathname))
-      if (statSync(local, { throwIfNoEntry: false })?.isFile()) return load(local, opts)
+      const local = inside(root, new URL(source).pathname)
+      if (local && statSync(local, { throwIfNoEntry: false })?.isFile()) return load(local, opts)
     }
     return load(source, opts)
   }
+}
+
+/** The file under `root` for a URL path, or null when it would fall outside root or can't be decoded. */
+function inside(root, pathname) {
+  let decoded
+  try {
+    decoded = decodeURIComponent(pathname)
+  } catch {
+    return null
+  }
+  const local = join(root, decoded)
+  const rel = relative(root, local)
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : local
 }
 
 /**

@@ -3,8 +3,10 @@
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
 
 function unescapeXml(s) {
+  // CDATA text is literal: decoding entities inside it would turn &amp; into &.
+  const cdata = s.match(/^<!\[CDATA\[([\s\S]*)\]\]>$/)
+  if (cdata) return cdata[1].trim()
   return s
-    .replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/, '$1')
     .replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e) => {
       if (e[0] === '#') return String.fromCodePoint(e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : +e.slice(1))
       return ENTITIES[e.toLowerCase()] ?? m

@@ -258,9 +258,10 @@ repos:
 sitemap gives the list of pages. The hook gets no file names from pre-commit,
 so both go in `args`. Other flags work there too, such as `--require-named`.
 On Linux and macOS, pre-commit uses the `node` and `npm` on your PATH when it
-finds both, and that Node must be 20 or later. On Windows, or with no Node on
-the PATH, it downloads a current Node instead. To run the hook once on every
-file:
+finds both outside your home folder. That Node must be 20 or later. It skips a
+Node from a version manager such as nvm, which lives in your home folder. In
+that case, and on Windows, it downloads a current Node instead. To run the hook
+once on every file:
 
 ```bash
 pre-commit run answer-crawler-check --all-files
@@ -327,7 +328,7 @@ No dependencies. Node 20 or later.
 npm test
 ```
 
-37 tests: the robots.txt rules above, sitemap indexes and gzip, the 4xx and 5xx
+38 tests: the robots.txt rules above, sitemap indexes and gzip, the 4xx and 5xx
 cases, `--site-dir`, `--robots`, the CLI exit codes and the pre-commit hook.
 They use a local HTTP server.
 

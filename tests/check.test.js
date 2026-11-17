@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { loadList } from '../src/agents.js'
-import { check, format, robotsState } from '../src/check.js'
+import { check, format, robotsState, withSiteDir } from '../src/check.js'
 import { parseSitemap } from '../src/sitemap.js'
 
 const list = loadList()
@@ -48,6 +48,25 @@ test('parseSitemap reads urlset, index, namespaces, entities and CDATA', () => {
   })
   assert.equal(parseSitemap('<sm:sitemapindex><sm:sitemap><sm:loc>u</sm:loc></sm:sitemap></sm:sitemapindex>').kind, 'index')
   assert.deepEqual(parseSitemap('<urlset><url><loc><![CDATA[https://e.com/b]]></loc></url></urlset>').locs, ['https://e.com/b'])
+  // CDATA is literal, so an entity inside it stays as written.
+  assert.deepEqual(parseSitemap('<urlset><url><loc><![CDATA[https://e.com/?x=1&amp;y=2]]></loc></url></urlset>').locs, ['https://e.com/?x=1&amp;y=2'])
+})
+
+test('--site-dir never reads a file outside the build folder', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'dist'))
+  writeFileSync(join(dir, 'secret.xml'), 'outside')
+  writeFileSync(join(dir, 'dist', 'inside.xml'), 'inside')
+  const seen = []
+  const load = withSiteDir(join(dir, 'dist'), async (source) => {
+    seen.push(source)
+    return { status: 404, text: '' }
+  })
+  await load('https://example.invalid/inside.xml')
+  await load('https://example.invalid/..%2fsecret.xml')
+  await load('https://example.invalid/%E0%A4%A')
+  assert.deepEqual(seen, [join(dir, 'dist', 'inside.xml'), 'https://example.invalid/..%2fsecret.xml', 'https://example.invalid/%E0%A4%A'])
 })
 
 test('robotsState follows RFC 9309', () => {

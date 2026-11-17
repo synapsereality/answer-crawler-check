@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { loadList } from '../src/agents.js'
@@ -131,8 +132,9 @@ test('a broken sitemap is a problem, and no URLs at all is a problem', async () 
   assert.match(r.problems.join('\n'), /no page URLs/)
 })
 
-test('--site-dir reads the local build and never touches the network', async () => {
+test('--site-dir reads the local build and never touches the network', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
   writeFileSync(join(dir, 'sitemap-index.xml'), '<sitemapindex><sitemap><loc>https://example.invalid/sitemap-0.xml</loc></sitemap></sitemapindex>')
   writeFileSync(join(dir, 'sitemap-0.xml'), '<urlset><url><loc>https://example.invalid/</loc></url><url><loc>https://example.invalid/p/</loc></url></urlset>')
   writeFileSync(join(dir, 'robots.txt'), 'User-agent: *\nAllow: /\nUser-agent: ChatGPT-User\nDisallow: /p/\n')
@@ -143,7 +145,7 @@ test('--site-dir reads the local build and never touches the network', async () 
 
 function cli(args) {
   return new Promise((ok) => {
-    execFile(process.execPath, [new URL('../bin/answer-crawler-check.js', import.meta.url).pathname, ...args], (err, stdout, stderr) =>
+    execFile(process.execPath, [fileURLToPath(new URL('../bin/answer-crawler-check.js', import.meta.url)), ...args], (err, stdout, stderr) =>
       ok({ code: err ? err.code : 0, stdout, stderr }))
   })
 }
@@ -160,8 +162,9 @@ test('CLI exit codes: 0 open, 1 blocked, 2 bad input, report-only', async () => 
   assert.equal((await cli(['--bogus'])).code, 2)
 })
 
-test('CLI --robots FILE tests a local robots.txt against the sitemap pages, as the pre-commit hook does', async () => {
+test('CLI --robots FILE tests a local robots.txt against the sitemap pages, as the pre-commit hook does', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'acc-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
   const robots = join(dir, 'robots.txt')
   site('User-agent: *\nAllow: /\n')
   writeFileSync(robots, 'User-agent: *\nAllow: /\nUser-agent: PerplexityBot\nDisallow: /docs/\n')

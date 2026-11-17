@@ -257,21 +257,25 @@ repos:
 `--robots` is the path to your robots.txt from the root of the repo, and the
 sitemap gives the list of pages. The hook gets no file names from pre-commit,
 so both go in `args`. Other flags work there too, such as `--require-named`.
-When `node` and `npm` are on your PATH, pre-commit uses them, and that Node
-must be 20 or later. To run the hook once on every file:
+On Linux and macOS, pre-commit uses the `node` and `npm` on your PATH when it
+finds both, and that Node must be 20 or later. On Windows, or with no Node on
+the PATH, it downloads a current Node instead. To run the hook once on every
+file:
 
 ```bash
 pre-commit run answer-crawler-check --all-files
 ```
 
 The hook needs network access to read a live sitemap. Without it, the sitemap
-can't be read and the commit fails. To check offline, run it on a build with
-`--site-dir`. It reads the sitemaps and robots.txt from the build folder, so
-build first, or it checks the old copy:
+can't be read and the commit fails. To check offline, read the sitemap from a
+build with `--site-dir` and keep `--robots` on the file in your repo:
 
 ```yaml
-        args: [dist/sitemap-index.xml, --site-dir, dist]
+        args: [--robots, public/robots.txt, dist/sitemap-index.xml, --site-dir, dist]
 ```
+
+The pages then come from your last build, and the robots.txt you are
+committing is the one tested.
 
 ### Any other CI: a shell step
 

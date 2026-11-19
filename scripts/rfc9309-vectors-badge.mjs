@@ -21,29 +21,34 @@
 //   --out DIR           where the two files go (default: the current folder)
 //   --known ID,ID       vectors your parser reads another way on purpose. They
 //                       still count as misses on the badge, and the run passes.
+//                       An error on one of them still fails the run.
 //   --vectors FILE|URL  read the vectors from here instead of the URL below
 //   --check             write nothing, and fail if the files in DIR differ
-//                       from what this run would write
+//                       from what this run would write. A badge that names an
+//                       older patch release, with the same count, still passes.
 //
-// Exit code 0 when every vector gives the expected result, apart from the
-// --known ones. 1 when another vector gives the other result, or --check finds
-// a file out of date. The files are still written in the first case. 2 for a
-// bad flag, a vectors file that can't be read, or an isAllowed that fails on
-// every vector. Nothing is written then.
+// Exit codes:
+//   0  Every vector gives the expected result, apart from the --known ones.
+//   1  Another vector gives the other result. Or isAllowed fails, or answers
+//      something other than true or false, on some vectors. Or --check finds
+//      a file out of date. Without --check the files are still written.
+//   2  A bad flag or a vectors file that can't be read. Or isAllowed fails on
+//      every vector or never answers. Nothing is written in these cases. Also
+//      a file that can't be written: each file is replaced whole or not at all.
 //
 // The badge states a count and the version of the vectors file, nothing more.
 // The script fetches the vectors file once and calls nothing else.
 
 import { realpathSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { allows, parseRobots } from '../src/robots.js'
 
 // Your parser goes here. It gets the whole robots.txt file, the crawler name
 // and the path, and returns true when that crawler may fetch that path. It may
-// be async. Change the one line inside it.
+// be async. Replace the line inside, and import your parser at the top.
 export function isAllowed(robotsTxt, userAgent, path) {
   return allows(parseRobots(robotsTxt), userAgent, path).allowed
 }
@@ -57,6 +62,9 @@ export const JSON_FILE = 'rfc9309-vectors-badge.json'
 export const MAJOR = 1
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)$/
+// Ids are printed at the start of a line, where a newline or an escape could
+// pass for a CI command, so they are held to the form the vectors use.
+const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const USAGE = 'usage: node rfc9309-vectors-badge.mjs [--out DIR] [--known ID,ID] [--vectors FILE|URL] [--check]'
 
 /**
@@ -74,10 +82,10 @@ export function readVectors(data) {
   if (!Array.isArray(data.vectors) || data.vectors.length === 0) throw new Error('the vectors file holds no vectors')
   const ids = new Set()
   data.vectors.forEach((v, i) => {
-    const whole = v !== null && typeof v === 'object' && typeof v.id === 'string' && v.id !== '' &&
+    const whole = v !== null && typeof v === 'object' && typeof v.id === 'string' && v.id.length <= 100 && ID.test(v.id) &&
       typeof v.robots_txt === 'string' && typeof v.user_agent === 'string' && typeof v.path === 'string' &&
       (v.expected === 'allowed' || v.expected === 'disallowed')
-    if (!whole) throw new Error(`vector ${i + 1} needs an id, robots_txt, user_agent, path and expected`)
+    if (!whole) throw new Error(`vector ${i + 1} needs an id of lower-case letters, digits and hyphens, a robots_txt, user_agent, path and expected`)
     if (ids.has(v.id)) throw new Error(`the id ${v.id} is used twice`)
     ids.add(v.id)
   })
@@ -98,7 +106,9 @@ export async function measure(vectors, parser) {
       if (typeof answer !== 'boolean') throw new Error(`isAllowed returned ${answer === null ? 'null' : typeof answer}, not true or false`)
     } catch (err) {
       errors++
-      missed.push({ id: v.id, expected: v.expected, error: err instanceof Error ? err.message : String(err) })
+      // One line, whatever the parser put in its message.
+      const message = err instanceof Error ? err.message : String(err)
+      missed.push({ id: v.id, expected: v.expected, error: message.replace(/[\u0000-\u001F\u007F]+/g, ' ') })
       continue
     }
     const got = answer ? 'allowed' : 'disallowed'
@@ -118,7 +128,7 @@ export function badgeText(version, passed, total) {
 
 const XML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }
 // Characters XML 1.0 does not allow at all, so no escape can carry them.
-const NOT_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/
+const NOT_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/
 
 /** Text for an SVG element or attribute, escaped in one pass. */
 export function escapeXml(text) {
@@ -168,6 +178,30 @@ export function endpointJson({ label, message }) {
   return `${JSON.stringify(badge, null, 2)}\n`
 }
 
+const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/** One retry after a network error, a 5xx or a 429, so a blip does not fail a CI run. */
+async function fetchJson(url) {
+  for (let attempt = 1; ; attempt++) {
+    let res
+    try {
+      res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
+    } catch (err) {
+      if (attempt < 2) {
+        await pause(2_000)
+        continue
+      }
+      throw new Error(`${url.href} did not answer: ${err.cause instanceof Error ? err.cause.message : err.message}`)
+    }
+    if (res.ok) return await res.json()
+    if (attempt < 2 && (res.status >= 500 || res.status === 429)) {
+      await pause(2_000)
+      continue
+    }
+    throw new Error(`${url.href} answered ${res.status}`)
+  }
+}
+
 async function load(source) {
   let url = null
   try {
@@ -175,12 +209,37 @@ async function load(source) {
   } catch {
     // Not a URL, so a file path.
   }
-  if (url && (url.protocol === 'https:' || url.protocol === 'http:')) {
-    const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
-    if (!res.ok) throw new Error(`${url.href} answered ${res.status}`)
-    return await res.json()
-  }
+  if (url && (url.protocol === 'https:' || url.protocol === 'http:')) return await fetchJson(url)
   return JSON.parse(await readFile(url && url.protocol === 'file:' ? url : source, 'utf8'))
+}
+
+/** The version a badge JSON file names in its label, or null. */
+function namedVersion(json) {
+  try {
+    const match = /^RFC 9309 vectors v(\d+\.\d+\.\d+)$/.exec(JSON.parse(json).label)
+    return match ? match[1] : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Replaces each file whole: both go to temporary names first, then each is
+ * renamed over its target, so a failed write never leaves half a file.
+ */
+async function writeWhole(dir, files) {
+  await mkdir(dir, { recursive: true })
+  for (const [path] of files) {
+    const st = await stat(path).catch(() => null)
+    if (st && !st.isFile()) throw new Error(`${path} is not a file`)
+  }
+  const temp = (path) => `${path}.${process.pid}.tmp`
+  try {
+    for (const [path, body] of files) await writeFile(temp(path), body)
+    for (const [path] of files) await rename(temp(path), path)
+  } finally {
+    await Promise.all(files.map(([path]) => rm(temp(path), { force: true })))
+  }
 }
 
 /**
@@ -230,9 +289,11 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
   for (const id of known) if (!ids.has(id)) io.err(`--known ${id}: no vector in version ${file.version} has this id`)
   let unexpected = 0
   for (const m of result.missed) {
-    if (!known.has(m.id)) unexpected++
+    // --known is for a different reading of the RFC, never for a parser that fails.
+    const listed = known.has(m.id) && m.error === undefined
+    if (!listed) unexpected++
     const what = m.error === undefined ? `expected ${m.expected}, got ${m.got}` : `isAllowed failed: ${m.error}`
-    io.out(`${m.id}: ${what}${known.has(m.id) ? ' (known)' : ''}`)
+    io.out(`${m.id}: ${what}${listed ? ' (known)' : ''}`)
   }
   const missedIds = new Set(result.missed.map((m) => m.id))
   for (const id of known) if (ids.has(id) && !missedIds.has(id)) io.out(`${id}: now gives the expected result, so it can come off --known`)
@@ -244,25 +305,34 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
     [join(args.out, JSON_FILE), endpointJson(text)],
   ]
   if (args.check) {
-    const stale = []
-    for (const [path, body] of files) {
-      let current = null
+    const current = []
+    for (const [path] of files) {
       try {
-        current = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n')
+        current.push((await readFile(path, 'utf8')).replace(/\r\n/g, '\n'))
       } catch {
-        // A missing file is out of date too.
+        current.push(null) // A missing file is out of date too.
       }
-      if (current !== body) stale.push(path)
     }
-    if (stale.length) {
-      io.err(`out of date: ${stale.join(' and ')}. Run without --check to write the badge for this result.`)
-      return 1
+    const same = (bodies) => bodies.every((body, i) => current[i] === body)
+    if (same(files.map(([, body]) => body))) {
+      io.out(`${files.map(([path]) => path).join(' and ')} match this run`)
+    } else {
+      // A new last number fixes a reason or a quote and changes no result.
+      // A badge that names an older patch with the same count still holds.
+      const named = current[1] === null ? null : namedVersion(current[1])
+      const [a, b] = [named, file.version].map((v) => (v ?? '').split('.').slice(0, 2).join('.'))
+      const old = named !== null && named !== file.version && a === b ? badgeText(named, result.passed, result.total) : null
+      if (old && same([badgeSvg(old), endpointJson(old)])) {
+        io.out(`the badge names vectors ${named} and this run read ${file.version}, with the same count. Run without --check to update its label.`)
+      } else {
+        const stale = files.filter((f, i) => current[i] !== f[1]).map(([path]) => path)
+        io.err(`out of date: ${stale.join(' and ')}. Run without --check to write the badge for this result.`)
+        return 1
+      }
     }
-    io.out(`${files.map(([path]) => path).join(' and ')} match this run`)
   } else {
     try {
-      await mkdir(args.out, { recursive: true })
-      for (const [path, body] of files) await writeFile(path, body)
+      await writeWhole(args.out, files)
     } catch (err) {
       io.err(`rfc9309-vectors-badge: could not write the badge: ${err.message}`)
       return 2
@@ -275,18 +345,27 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
 /** True when Node runs this file, false when another module imports it. */
 function runDirectly() {
   try {
-    return process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+    return process.argv[1] !== undefined && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
   } catch {
     return false
   }
 }
 
 if (runDirectly()) {
+  // Only a finished run lowers this. A promise from isAllowed that never
+  // settles lets Node exit with nothing left to do, and that must not pass.
+  let finished = false
+  process.exitCode = 2
+  process.on('exit', () => {
+    if (!finished) console.error('rfc9309-vectors-badge: the run stopped before it finished. Does isAllowed return a promise that never settles?')
+  })
   main().then(
     (code) => {
+      finished = true
       process.exitCode = code
     },
     (err) => {
+      finished = true
       console.error(err)
       process.exitCode = 2
     },

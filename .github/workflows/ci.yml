@@ -36,10 +36,11 @@ jobs:
 
   rfc9309-vectors:
     # Runs the published RFC 9309 test vectors against src/robots.js. Fails when
-    # a vector outside the three known differences fails, or when the badge in
-    # .github/badges no longer matches the count. The script needs Node 20 or
-    # later and nothing else, so the runner's own Node runs it.
+    # any vector but the three listed in --known gives the other result, or when
+    # the files in .github/badges no longer match the run. The script needs Node
+    # 20 or later and nothing else, so the runner's own Node runs it.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: >-

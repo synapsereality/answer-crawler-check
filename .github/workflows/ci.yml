@@ -33,3 +33,15 @@ jobs:
         with:
           sitemap: site/sitemap.xml
           site-dir: site
+
+  rfc9309-vectors:
+    # Runs the published RFC 9309 test vectors against src/robots.js. Fails when
+    # a vector outside the three known differences fails, or when the badge in
+    # .github/badges no longer matches the count. The script needs Node 20 or
+    # later and nothing else, so the runner's own Node runs it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: >-
+          node scripts/rfc9309-vectors-badge.mjs --out .github/badges --check
+          --known other-record-keeps-names-in-one-group-first,unreserved-escape-in-the-path,unreserved-escape-figure-4

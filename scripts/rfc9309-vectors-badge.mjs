@@ -26,7 +26,9 @@
 //   --check             write nothing, and fail if the files in DIR differ
 //                       from what this run would write. A badge that names an
 //                       older patch release, with the same count, still passes.
-//   --timeout S         seconds to wait for one answer from isAllowed (default 60)
+//   --timeout S         seconds to wait for one answer from isAllowed (default 60).
+//                       A parser that never hands control back can't be
+//                       stopped from inside, so give the CI job a timeout too.
 //
 // Exit codes:
 //   0  Every vector gives the expected result, apart from the --known ones.
@@ -43,8 +45,10 @@
 // nothing else.
 
 import { realpathSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -65,7 +69,8 @@ export const JSON_FILE = 'rfc9309-vectors-badge.json'
 /** The first number of the vectors version this script reads. A new one means a new copy of the script. */
 export const MAJOR = 1
 
-const VERSION = /^(\d+)\.(\d+)\.(\d+)$/
+// Up to six digits a number, so each compares exactly and the label stays short.
+const VERSION = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/
 // Ids are printed at the start of a line, where a newline or an escape could
 // pass for a CI command, so they are held to the form the vectors use.
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -127,8 +132,12 @@ export async function measure(vectors, parser, timeoutMs = 60_000) {
     const late = new Promise((_, fail) => {
       timer = setTimeout(() => fail(new NoAnswer(`isAllowed gave no answer for ${v.id} within ${timeoutMs / 1000} s`)), timeoutMs)
     })
+    const started = performance.now()
     try {
       answer = await Promise.race([Promise.resolve().then(() => parser(v.robots_txt, v.user_agent, v.path)), late])
+      // A synchronous parser holds the timer back until it returns, so a late
+      // answer can still win the race. It is late all the same.
+      if (performance.now() - started > timeoutMs) throw new NoAnswer(`isAllowed gave no answer for ${v.id} within ${timeoutMs / 1000} s`)
       if (typeof answer !== 'boolean') throw new Error(`isAllowed returned ${answer === null ? 'null' : typeof answer}, not true or false`)
     } catch (err) {
       if (err instanceof NoAnswer) throw err
@@ -245,12 +254,29 @@ async function fetchText(url) {
   }
 }
 
-/** A regular file, read only when it is one and is not oversized. A pipe or a device is refused. */
+/**
+ * A regular file of at most MAX_BYTES. It is opened once, without blocking, and
+ * the open file is the one checked and read, so a pipe, a device or a file
+ * that grows after the check is refused rather than waited on.
+ */
 async function readSmallFile(path) {
-  const st = await stat(path)
-  if (!st.isFile()) throw new Error(`${path} is not a file`)
-  if (st.size > MAX_BYTES) throw new Error(`${path} is over ${MAX_BYTES} bytes`)
-  return await readFile(path, 'utf8')
+  const fh = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+  try {
+    const st = await fh.stat()
+    if (!st.isFile()) throw new Error(`${oneLine(path)} is not a file`)
+    if (st.size > MAX_BYTES) throw new Error(`${oneLine(path)} is over ${MAX_BYTES} bytes`)
+    const buf = Buffer.alloc(MAX_BYTES + 1)
+    let size = 0
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, size, buf.length - size, size)
+      if (bytesRead === 0) break
+      size += bytesRead
+      if (size > MAX_BYTES) throw new Error(`${oneLine(path)} is over ${MAX_BYTES} bytes`)
+    }
+    return buf.subarray(0, size).toString('utf8')
+  } finally {
+    await fh.close()
+  }
 }
 
 async function load(source) {
@@ -267,7 +293,7 @@ async function load(source) {
 /** The version a badge JSON file names in its label, or null. */
 function namedVersion(json) {
   try {
-    const match = /^RFC 9309 vectors v(\d+\.\d+\.\d+)$/.exec(JSON.parse(json).label)
+    const match = /^RFC 9309 vectors v(\d{1,6}\.\d{1,6}\.\d{1,6})$/.exec(JSON.parse(json).label)
     return match ? match[1] : null
   } catch {
     return null
@@ -290,8 +316,14 @@ async function writeWhole(dir, files) {
   try {
     for (const [path, body] of files) {
       const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
-      await writeFile(temp, body, { flag: 'wx' })
+      const fh = await open(temp, 'wx')
+      // Ours from here on, so it is removed even if the write fails halfway.
       made.push([temp, path])
+      try {
+        await fh.writeFile(body)
+      } finally {
+        await fh.close()
+      }
     }
     for (const [temp, path] of made) await rename(temp, path)
   } finally {
@@ -385,7 +417,7 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
     }
     const same = (bodies) => bodies.every((body, i) => current[i] === body)
     if (same(files.map(([, body]) => body))) {
-      io.out(`${files.map(([path]) => path).join(' and ')} match this run`)
+      io.out(`${files.map(([path]) => oneLine(path)).join(' and ')} match this run`)
     } else {
       // A new last number fixes a reason or a quote and changes no result.
       // A badge that names an older patch with the same count still holds.
@@ -408,7 +440,7 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
       io.err(`rfc9309-vectors-badge: could not write the badge: ${messageOf(err)}`)
       return 2
     }
-    io.out(`wrote ${files.map(([path]) => path).join(' and ')}`)
+    io.out(`wrote ${files.map(([path]) => oneLine(path)).join(' and ')}`)
   }
   return unexpected ? 1 : 0
 }

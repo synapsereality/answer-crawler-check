@@ -356,7 +356,7 @@ No dependencies. Node 20 or later.
 npm test
 ```
 
-57 tests. They cover the robots.txt rules above, sitemap indexes and gzip, the
+59 tests. They cover the robots.txt rules above, sitemap indexes and gzip, the
 4xx and 5xx cases, `--site-dir`, `--robots` and the CLI exit codes. The
 pre-commit hook and the badge script have tests too. They use a local HTTP
 server.

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import {
   JSON_FILE,
+  NoAnswer,
   PAGE_URL,
   SVG_FILE,
   badgeLayout,
@@ -136,6 +137,7 @@ test('readVectors refuses a file this script cannot read', () => {
     [null, /not a JSON object/],
     [[], /not a JSON object/],
     [{ ...FILE, version: 'v1' }, /no version such as 1\.0\.0/],
+    [{ ...FILE, version: '1.1234567.0' }, /no version such as 1\.0\.0/],
     [{ ...FILE, version: '2.0.0' }, /reads version 1 of the vectors and the file is version 2\.0\.0\. Get the current script from https:/],
     [{ ...FILE, vectors: [] }, /holds no vectors/],
     [{ ...FILE, vectors: [{ ...FILE.vectors[0], expected: 'blocked' }] }, /vector 1 needs/],
@@ -234,7 +236,11 @@ test('the committed badge is one the script writes, and the README shows it with
   assert.equal(read(`.github/badges/${SVG_FILE}`), badgeSvg(text))
   assert.equal(read(`.github/badges/${JSON_FILE}`), endpointJson(text))
   const img = `https://raw.githubusercontent.com/synapsereality/answer-crawler-check/main/.github/badges/${SVG_FILE}`
-  assert.ok(read('README.md').includes(`[![${text.label}: ${text.message}](${img})](${PAGE_URL})`))
+  const readme = read('README.md')
+  const at = readme.indexOf(`[![${text.label}: ${text.message}](${img})](${PAGE_URL})`)
+  assert.ok(at >= 0, 'the README shows the committed badge with its own text')
+  assert.ok(readme.lastIndexOf('<!--', at) <= readme.lastIndexOf('-->', at), 'and not inside an HTML comment')
+  assert.ok(at < readme.indexOf('\n# '), 'in the badge row above the title')
 })
 
 test('an error on a --known vector still fails the run', async () => {
@@ -272,6 +278,8 @@ test('--check lets a badge that names an older patch release pass when the count
   const ahead = tempDir()
   assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.3' }), '--out', ahead, '--known', 'second-page'], stub, capture()), 0)
   assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.1' }), '--out', ahead, '--check', '--known', 'second-page'], stub, capture()), 1)
+  // A new middle number is out of date even when the count happens to be the same.
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.1.0' }), '--out', out, '--check', '--known', 'second-page'], stub, capture()), 1)
   // So is a patch release whose count differs, which the versioning rules rule out but a file could still carry.
   assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.2' }), '--out', out, '--check'], (r, u, p) => p !== '/private', capture()), 1)
 })
@@ -286,7 +294,10 @@ async function runCopy(body, args) {
   writeFileSync(join(dir, 'copy.mjs'), source)
   const out = join(dir, 'out')
   const result = await new Promise((done) => {
-    execFile(process.execPath, [join(dir, 'copy.mjs'), '--out', out, ...args], (err, stdout, stderr) => done({ code: err ? err.code : 0, stderr }))
+    // The timeout turns a hang into a failure here, never a stuck CI job.
+    execFile(process.execPath, [join(dir, 'copy.mjs'), '--out', out, ...args], { timeout: 20_000 }, (err, stdout, stderr) =>
+      done({ code: err ? (err.killed ? 'killed' : err.code) : 0, stderr }),
+    )
   })
   return { ...result, wrote: existsSync(out) }
 }
@@ -327,4 +338,23 @@ test('a vectors path that is not a regular file, or is far too large, is refused
   const big = capture()
   assert.equal(await main(['--vectors', huge, '--out', tempDir()], stub, big), 2)
   assert.match(big.lines.join('\n'), /is over 5242880 bytes/)
+})
+
+test('a synchronous parser that answers late is still late, and the run stops', async () => {
+  const slow = () => {
+    const until = Date.now() + 30
+    while (Date.now() < until) {
+      // A parser busy for 30 ms, with no await for the timer to get in.
+    }
+    return true
+  }
+  await assert.rejects(measure(FILE.vectors, slow, 5), (err) => err instanceof NoAnswer && err.message === 'isAllowed gave no answer for open-page within 0.005 s')
+})
+
+test('a named pipe as the vectors file is refused at once instead of waited on', { skip: process.platform === 'win32' }, async () => {
+  const fifo = join(tempDir(), 'vectors.fifo')
+  execFileSync('mkfifo', [fifo])
+  const io = capture()
+  assert.equal(await main(['--vectors', fifo, '--out', tempDir()], stub, io), 2)
+  assert.match(io.lines.join('\n'), /vectors\.fifo is not a file/)
 })

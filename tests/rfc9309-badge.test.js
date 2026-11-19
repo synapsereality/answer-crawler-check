@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -248,7 +248,7 @@ test('an error on a --known vector still fails the run', async () => {
   assert.ok(io.lines.includes('second-page: isAllowed failed: parser crashed ::error::x'))
 })
 
-test('a failed write exits 2 and leaves the badge files as they were', async () => {
+test('a badge path that is not a file stops the run before anything is written', async () => {
   const out = tempDir()
   writeFileSync(join(out, SVG_FILE), 'old svg')
   mkdirSync(join(out, JSON_FILE))
@@ -268,23 +268,63 @@ test('--check lets a badge that names an older patch release pass when the count
   // A new middle number adds vectors, so the badge is out of date.
   const more = { ...FILE, version: '1.1.0', vectors: [...FILE.vectors, vector('third-page', '/c', 'allowed')] }
   assert.equal(await main(['--vectors', vectorsFile(more), '--out', out, '--check', '--known', 'second-page'], (r, u, p) => p === '/c' || stub(r, u, p), capture()), 1)
+  // A badge that names a newer patch than the file it ran is out of date too.
+  const ahead = tempDir()
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.3' }), '--out', ahead, '--known', 'second-page'], stub, capture()), 0)
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.1' }), '--out', ahead, '--check', '--known', 'second-page'], stub, capture()), 1)
   // So is a patch release whose count differs, which the versioning rules rule out but a file could still carry.
   assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.2' }), '--out', out, '--check'], (r, u, p) => p !== '/private', capture()), 1)
 })
 
-test('run as a script, a parser promise that never settles exits 2 instead of passing', async () => {
-  // A copy of the script whose isAllowed never answers, run by Node itself.
+/** Runs a copy of the script whose isAllowed body is `body`, with Node itself. */
+async function runCopy(body, args) {
   const dir = tempDir()
   const source = read('scripts/rfc9309-vectors-badge.mjs')
     .replace("import { allows, parseRobots } from '../src/robots.js'\n", '')
-    .replace('  return allows(parseRobots(robotsTxt), userAgent, path).allowed\n', '  return new Promise(() => {})\n')
-  assert.ok(source.includes('return new Promise(() => {})'))
-  writeFileSync(join(dir, 'hang.mjs'), source)
+    .replace('  return allows(parseRobots(robotsTxt), userAgent, path).allowed\n', `  ${body}\n`)
+  assert.ok(source.includes(body))
+  writeFileSync(join(dir, 'copy.mjs'), source)
   const out = join(dir, 'out')
   const result = await new Promise((done) => {
-    execFile(process.execPath, [join(dir, 'hang.mjs'), '--vectors', vectorsFile(), '--out', out], (err, stdout, stderr) => done({ code: err ? err.code : 0, stderr }))
+    execFile(process.execPath, [join(dir, 'copy.mjs'), '--out', out, ...args], (err, stdout, stderr) => done({ code: err ? err.code : 0, stderr }))
   })
-  assert.equal(result.code, 2)
-  assert.match(result.stderr, /the run stopped before it finished/)
-  assert.equal(existsSync(out), false)
+  return { ...result, wrote: existsSync(out) }
+}
+
+test('run as a script, an isAllowed that never answers exits 2 after --timeout and writes nothing', async () => {
+  // A promise that never settles, with nothing else keeping Node busy.
+  const idle = await runCopy('return new Promise(() => {})', ['--vectors', vectorsFile(), '--timeout', '0.5'])
+  assert.equal(idle.code, 2)
+  assert.match(idle.stderr, /isAllowed gave no answer for open-page within 0\.5 s, so no badge was written/)
+  assert.equal(idle.wrote, false)
+  // A promise that never settles while a timer keeps Node busy, which would otherwise hang.
+  const busy = await runCopy('return new Promise(() => { setInterval(() => {}, 1000) })', ['--vectors', vectorsFile(), '--timeout', '0.5'])
+  assert.equal(busy.code, 2)
+  assert.match(busy.stderr, /gave no answer for open-page/)
+  assert.equal(busy.wrote, false)
+})
+
+test('--timeout takes seconds above 0, and a thrown value that cannot be printed is still one miss', async () => {
+  for (const bad of ['0', '-1', 'soon', '1e3', '3601']) assert.equal(await main(['--vectors', vectorsFile(), '--timeout', bad], stub, capture()), 2, bad)
+  const odd = (r, u, path) => {
+    if (path === '/b') throw Object.create(null)
+    return answers[path]
+  }
+  const io = capture()
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', tempDir()], odd, io), 1)
+  assert.ok(io.lines.includes('second-page: isAllowed failed: a value that cannot be printed'))
+  assert.ok(io.lines.includes('2 of 3 as expected, RFC 9309 vectors v1.0.0'))
+})
+
+test('a vectors path that is not a regular file, or is far too large, is refused before it is read', async () => {
+  const dir = tempDir()
+  const io = capture()
+  assert.equal(await main(['--vectors', dir, '--out', tempDir()], stub, io), 2)
+  assert.match(io.lines.join('\n'), /is not a file/)
+  const huge = join(tempDir(), 'huge.json')
+  writeFileSync(huge, '')
+  truncateSync(huge, 6 * 1024 * 1024)
+  const big = capture()
+  assert.equal(await main(['--vectors', huge, '--out', tempDir()], stub, big), 2)
+  assert.match(big.lines.join('\n'), /is over 5242880 bytes/)
 })

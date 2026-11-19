@@ -124,8 +124,10 @@ A percent-encoded letter such as `%70` is compared as written, and a line such
 as `Crawl-delay` ends a run of `User-agent` lines.
 
 After a change to the matcher or a new release of the vectors, refresh the
-badge with this command and commit the two files in `.github/badges/`. The CI
-job runs the same command with `--check`.
+badge with this command and commit the two files in `.github/badges/`. Change
+the badge's alt text at the top of this README to match, since a test checks
+it. The CI job runs the same command with `--check`, which also passes a badge
+that names an older patch release with the same count.
 
 ```bash
 node scripts/rfc9309-vectors-badge.mjs --out .github/badges \
@@ -354,7 +356,7 @@ No dependencies. Node 20 or later.
 npm test
 ```
 
-55 tests. They cover the robots.txt rules above, sitemap indexes and gzip, the
+57 tests. They cover the robots.txt rules above, sitemap indexes and gzip, the
 4xx and 5xx cases, `--site-dir`, `--robots` and the CLI exit codes. The
 pre-commit hook and the badge script have tests too. They use a local HTTP
 server.

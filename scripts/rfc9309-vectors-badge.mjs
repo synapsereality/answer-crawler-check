@@ -1,6 +1,6 @@
 // rfc9309-vectors-badge.mjs, for Node 20 or later, with no dependencies.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Synapse Research Ltd
+// Copyright (c) 2026 Synapse Research Ltd. The licence text is at the end.
 // https://synapsereality.io/open-source/answer-crawler-check/rfc9309-test-vectors/
 //
 // Runs the RFC 9309 robots.txt test vectors against your parser and writes a
@@ -16,7 +16,7 @@
 //
 // Run:
 //
-//   node rfc9309-vectors-badge.mjs [--out DIR] [--known ID,ID] [--vectors FILE|URL] [--check]
+//   node rfc9309-vectors-badge.mjs [--out DIR] [--known ID,ID] [--vectors FILE|URL] [--check] [--timeout S]
 //
 //   --out DIR           where the two files go (default: the current folder)
 //   --known ID,ID       vectors your parser reads another way on purpose. They
@@ -26,6 +26,7 @@
 //   --check             write nothing, and fail if the files in DIR differ
 //                       from what this run would write. A badge that names an
 //                       older patch release, with the same count, still passes.
+//   --timeout S         seconds to wait for one answer from isAllowed (default 60)
 //
 // Exit codes:
 //   0  Every vector gives the expected result, apart from the --known ones.
@@ -33,13 +34,16 @@
 //      something other than true or false, on some vectors. Or --check finds
 //      a file out of date. Without --check the files are still written.
 //   2  A bad flag or a vectors file that can't be read. Or isAllowed fails on
-//      every vector or never answers. Nothing is written in these cases. Also
-//      a file that can't be written: each file is replaced whole or not at all.
+//      every vector, or gives no answer within --timeout. Nothing is written in
+//      these cases. Also a file that can't be written: each file is replaced
+//      whole or not at all.
 //
 // The badge states a count and the version of the vectors file, nothing more.
-// The script fetches the vectors file once and calls nothing else.
+// The script fetches the vectors file, once more if that fails, and calls
+// nothing else.
 
 import { realpathSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,7 +69,24 @@ const VERSION = /^(\d+)\.(\d+)\.(\d+)$/
 // Ids are printed at the start of a line, where a newline or an escape could
 // pass for a CI command, so they are held to the form the vectors use.
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-const USAGE = 'usage: node rfc9309-vectors-badge.mjs [--out DIR] [--known ID,ID] [--vectors FILE|URL] [--check]'
+const USAGE = 'usage: node rfc9309-vectors-badge.mjs [--out DIR] [--known ID,ID] [--vectors FILE|URL] [--check] [--timeout S]'
+// The vectors file is under 100 KB. Anything far larger is not it.
+const MAX_BYTES = 5 * 1024 * 1024
+
+/** Text on one line, so nothing printed can start a line of its own. */
+const oneLine = (text) => String(text).replace(/[\u0000-\u001F\u007F]+/g, ' ')
+
+/** The message of anything thrown, even a value that cannot be turned into a string. */
+function messageOf(err) {
+  try {
+    return oneLine(err instanceof Error ? err.message : String(err))
+  } catch {
+    return 'a value that cannot be printed'
+  }
+}
+
+/** Thrown when isAllowed gives no answer in time. It stops the run. */
+export class NoAnswer extends Error {}
 
 /**
  * Checks the parsed vectors file and returns its version and vectors.
@@ -94,22 +115,28 @@ export function readVectors(data) {
 
 /**
  * Runs every vector through the parser. A vector counts when the parser gives
- * the expected result. An answer that is not true or false, or an error, is a miss.
+ * the expected result. An answer that is not true or false, or an error, is a
+ * miss. No answer within timeoutMs throws NoAnswer and stops the run.
  */
-export async function measure(vectors, parser) {
+export async function measure(vectors, parser, timeoutMs = 60_000) {
   const missed = []
   let errors = 0
   for (const v of vectors) {
     let answer
+    let timer
+    const late = new Promise((_, fail) => {
+      timer = setTimeout(() => fail(new NoAnswer(`isAllowed gave no answer for ${v.id} within ${timeoutMs / 1000} s`)), timeoutMs)
+    })
     try {
-      answer = await parser(v.robots_txt, v.user_agent, v.path)
+      answer = await Promise.race([Promise.resolve().then(() => parser(v.robots_txt, v.user_agent, v.path)), late])
       if (typeof answer !== 'boolean') throw new Error(`isAllowed returned ${answer === null ? 'null' : typeof answer}, not true or false`)
     } catch (err) {
+      if (err instanceof NoAnswer) throw err
       errors++
-      // One line, whatever the parser put in its message.
-      const message = err instanceof Error ? err.message : String(err)
-      missed.push({ id: v.id, expected: v.expected, error: message.replace(/[\u0000-\u001F\u007F]+/g, ' ') })
+      missed.push({ id: v.id, expected: v.expected, error: messageOf(err) })
       continue
+    } finally {
+      clearTimeout(timer)
     }
     const got = answer ? 'allowed' : 'disallowed'
     if (got !== v.expected) missed.push({ id: v.id, expected: v.expected, got })
@@ -180,26 +207,50 @@ export function endpointJson({ label, message }) {
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms))
 
+/** An answer the server gave on purpose, such as a 404. Asking again would not change it. */
+class Refused extends Error {}
+
+/** The body of a response, refused past MAX_BYTES before it is all in memory. */
+async function bodyText(res, url) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of res.body) {
+    size += chunk.byteLength
+    if (size > MAX_BYTES) throw new Refused(`${url.href} sent more than ${MAX_BYTES} bytes`)
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 /** One retry after a network error, a 5xx or a 429, so a blip does not fail a CI run. */
-async function fetchJson(url) {
+async function fetchText(url) {
   for (let attempt = 1; ; attempt++) {
-    let res
     try {
-      res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
+      const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
+      if (res.ok) return await bodyText(res, url)
+      if (attempt < 2 && (res.status >= 500 || res.status === 429)) {
+        await pause(2_000)
+        continue
+      }
+      throw new Refused(`${url.href} answered ${res.status}`)
     } catch (err) {
+      if (err instanceof Refused) throw err
+      // A network error, a timeout or a body cut off halfway: ask once more.
       if (attempt < 2) {
         await pause(2_000)
         continue
       }
-      throw new Error(`${url.href} did not answer: ${err.cause instanceof Error ? err.cause.message : err.message}`)
+      throw new Error(`${url.href} did not answer: ${messageOf(err.cause ?? err)}`)
     }
-    if (res.ok) return await res.json()
-    if (attempt < 2 && (res.status >= 500 || res.status === 429)) {
-      await pause(2_000)
-      continue
-    }
-    throw new Error(`${url.href} answered ${res.status}`)
   }
+}
+
+/** A regular file, read only when it is one and is not oversized. A pipe or a device is refused. */
+async function readSmallFile(path) {
+  const st = await stat(path)
+  if (!st.isFile()) throw new Error(`${path} is not a file`)
+  if (st.size > MAX_BYTES) throw new Error(`${path} is over ${MAX_BYTES} bytes`)
+  return await readFile(path, 'utf8')
 }
 
 async function load(source) {
@@ -209,8 +260,8 @@ async function load(source) {
   } catch {
     // Not a URL, so a file path.
   }
-  if (url && (url.protocol === 'https:' || url.protocol === 'http:')) return await fetchJson(url)
-  return JSON.parse(await readFile(url && url.protocol === 'file:' ? url : source, 'utf8'))
+  if (url && (url.protocol === 'https:' || url.protocol === 'http:')) return JSON.parse(await fetchText(url))
+  return JSON.parse(await readSmallFile(url && url.protocol === 'file:' ? fileURLToPath(url) : source))
 }
 
 /** The version a badge JSON file names in its label, or null. */
@@ -224,8 +275,10 @@ function namedVersion(json) {
 }
 
 /**
- * Replaces each file whole: both go to temporary names first, then each is
- * renamed over its target, so a failed write never leaves half a file.
+ * Replaces each file whole: both go to new temporary files first, then each is
+ * renamed over its target, so a failed write never leaves half a file. The
+ * temporary names are random and created exclusively, so an existing file or
+ * link at one of them is never written through.
  */
 async function writeWhole(dir, files) {
   await mkdir(dir, { recursive: true })
@@ -233,12 +286,16 @@ async function writeWhole(dir, files) {
     const st = await stat(path).catch(() => null)
     if (st && !st.isFile()) throw new Error(`${path} is not a file`)
   }
-  const temp = (path) => `${path}.${process.pid}.tmp`
+  const made = []
   try {
-    for (const [path, body] of files) await writeFile(temp(path), body)
-    for (const [path] of files) await rename(temp(path), path)
+    for (const [path, body] of files) {
+      const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
+      await writeFile(temp, body, { flag: 'wx' })
+      made.push([temp, path])
+    }
+    for (const [temp, path] of made) await rename(temp, path)
   } finally {
-    await Promise.all(files.map(([path]) => rm(temp(path), { force: true })))
+    await Promise.all(made.map(([temp]) => rm(temp, { force: true })))
   }
 }
 
@@ -257,18 +314,24 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
         known: { type: 'string', multiple: true, default: [] },
         vectors: { type: 'string', default: VECTORS_URL },
         check: { type: 'boolean', default: false },
+        timeout: { type: 'string', default: '60' },
         help: { type: 'boolean', short: 'h', default: false },
       },
       strict: true,
       allowPositionals: false,
     }).values
   } catch (err) {
-    io.err(`${err.message}\n${USAGE}`)
+    io.err(`${messageOf(err)}\n${USAGE}`)
     return 2
   }
   if (args.help) {
     io.out(USAGE)
     return 0
+  }
+  const seconds = Number(args.timeout)
+  if (!/^\d+(\.\d+)?$/.test(args.timeout) || !(seconds > 0) || seconds > 3600) {
+    io.err(`--timeout takes a number of seconds from above 0 up to 3600\n${USAGE}`)
+    return 2
   }
   const known = new Set(args.known.flatMap((k) => k.split(',')).map((k) => k.trim()).filter(Boolean))
 
@@ -276,17 +339,24 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
   try {
     file = readVectors(await load(args.vectors))
   } catch (err) {
-    io.err(`rfc9309-vectors-badge: could not read the vectors from ${args.vectors}: ${err.message}`)
+    io.err(`rfc9309-vectors-badge: could not read the vectors from ${oneLine(args.vectors)}: ${messageOf(err)}`)
     return 2
   }
 
-  const result = await measure(file.vectors, parser)
+  let result
+  try {
+    result = await measure(file.vectors, parser, seconds * 1000)
+  } catch (err) {
+    if (!(err instanceof NoAnswer)) throw err
+    io.err(`rfc9309-vectors-badge: ${err.message}, so no badge was written. Is isAllowed waiting on something that never comes?`)
+    return 2
+  }
   if (result.errors === result.total) {
     io.err(`rfc9309-vectors-badge: isAllowed failed on every vector, so no badge was written. The first error: ${result.missed[0].error}`)
     return 2
   }
   const ids = new Set(file.vectors.map((v) => v.id))
-  for (const id of known) if (!ids.has(id)) io.err(`--known ${id}: no vector in version ${file.version} has this id`)
+  for (const id of known) if (!ids.has(id)) io.err(`--known ${oneLine(id)}: no vector in version ${file.version} has this id`)
   let unexpected = 0
   for (const m of result.missed) {
     // --known is for a different reading of the RFC, never for a parser that fails.
@@ -308,9 +378,9 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
     const current = []
     for (const [path] of files) {
       try {
-        current.push((await readFile(path, 'utf8')).replace(/\r\n/g, '\n'))
+        current.push((await readSmallFile(path)).replace(/\r\n/g, '\n'))
       } catch {
-        current.push(null) // A missing file is out of date too.
+        current.push(null) // A missing file, or anything but a file, is out of date too.
       }
     }
     const same = (bodies) => bodies.every((body, i) => current[i] === body)
@@ -320,12 +390,13 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
       // A new last number fixes a reason or a quote and changes no result.
       // A badge that names an older patch with the same count still holds.
       const named = current[1] === null ? null : namedVersion(current[1])
-      const [a, b] = [named, file.version].map((v) => (v ?? '').split('.').slice(0, 2).join('.'))
-      const old = named !== null && named !== file.version && a === b ? badgeText(named, result.passed, result.total) : null
+      const [was, now] = [named ?? '', file.version].map((v) => v.split('.').map(Number))
+      const olderPatch = named !== null && was[0] === now[0] && was[1] === now[1] && was[2] < now[2]
+      const old = olderPatch ? badgeText(named, result.passed, result.total) : null
       if (old && same([badgeSvg(old), endpointJson(old)])) {
         io.out(`the badge names vectors ${named} and this run read ${file.version}, with the same count. Run without --check to update its label.`)
       } else {
-        const stale = files.filter((f, i) => current[i] !== f[1]).map(([path]) => path)
+        const stale = files.filter((f, i) => current[i] !== f[1]).map(([path]) => oneLine(path))
         io.err(`out of date: ${stale.join(' and ')}. Run without --check to write the badge for this result.`)
         return 1
       }
@@ -334,7 +405,7 @@ export async function main(argv = process.argv.slice(2), parser = isAllowed, io 
     try {
       await writeWhole(args.out, files)
     } catch (err) {
-      io.err(`rfc9309-vectors-badge: could not write the badge: ${err.message}`)
+      io.err(`rfc9309-vectors-badge: could not write the badge: ${messageOf(err)}`)
       return 2
     }
     io.out(`wrote ${files.map(([path]) => path).join(' and ')}`)
@@ -359,15 +430,39 @@ if (runDirectly()) {
   process.on('exit', () => {
     if (!finished) console.error('rfc9309-vectors-badge: the run stopped before it finished. Does isAllowed return a promise that never settles?')
   })
-  main().then(
-    (code) => {
-      finished = true
-      process.exitCode = code
-    },
-    (err) => {
-      finished = true
-      console.error(err)
-      process.exitCode = 2
-    },
-  )
+  // A parser that gave up may still hold a timer or a child process open. Once
+  // the run is over, a second is enough to flush the output, then Node exits.
+  const done = (code) => {
+    finished = true
+    process.exitCode = code
+    setTimeout(() => process.exit(code), 1_000).unref()
+  }
+  main().then(done, (err) => {
+    console.error(err)
+    done(2)
+  })
 }
+
+/*
+MIT License
+
+Copyright (c) 2026 Synapse Research Ltd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/

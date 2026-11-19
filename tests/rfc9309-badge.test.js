@@ -1,0 +1,360 @@
+import assert from 'node:assert/strict'
+import { execFile, execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, before, test } from 'node:test'
+import {
+  JSON_FILE,
+  NoAnswer,
+  PAGE_URL,
+  SVG_FILE,
+  badgeLayout,
+  badgeSvg,
+  badgeText,
+  endpointJson,
+  escapeXml,
+  isAllowed,
+  main,
+  measure,
+  readVectors,
+} from '../scripts/rfc9309-vectors-badge.mjs'
+
+// scripts/rfc9309-vectors-badge.mjs runs the RFC 9309 test vectors and writes
+// the badge. These tests use small vector files of their own, so they need no
+// network. The rfc9309-vectors CI job runs the real file.
+
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
+const dirs = []
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acc-badge-'))
+  dirs.push(dir)
+  return dir
+}
+after(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+})
+
+const vector = (id, path, expected) => ({ id, robots_txt: 'User-agent: *\nDisallow: /private\n', user_agent: 'ExampleBot', path, expected })
+const FILE = {
+  name: 'test vectors',
+  version: '1.0.0',
+  vectors: [vector('open-page', '/a', 'allowed'), vector('second-page', '/b', 'allowed'), vector('private-page', '/private', 'disallowed')],
+}
+// A stub parser that reads every vector right except second-page.
+const answers = { '/a': true, '/b': false, '/private': false }
+const stub = (robotsTxt, userAgent, path) => answers[path]
+
+function vectorsFile(data = FILE) {
+  const path = join(tempDir(), 'vectors.json')
+  writeFileSync(path, JSON.stringify(data))
+  return path
+}
+function capture() {
+  const lines = []
+  return { lines, out: (s) => lines.push(s), err: (s) => lines.push(s) }
+}
+
+test('a stub parser that misses one vector gets the plain count, and --known keeps the run green', async () => {
+  const source = vectorsFile()
+  const out = tempDir()
+  const io = capture()
+  assert.equal(await main(['--vectors', source, '--out', out], stub, io), 1)
+  assert.ok(io.lines.includes('second-page: expected allowed, got disallowed'))
+  assert.ok(io.lines.includes('2 of 3 as expected, RFC 9309 vectors v1.0.0'))
+  const svg = readFileSync(join(out, SVG_FILE), 'utf8')
+  const json = readFileSync(join(out, JSON_FILE), 'utf8')
+  assert.equal(svg, badgeSvg({ label: 'RFC 9309 vectors v1.0.0', message: '2 of 3' }))
+  assert.equal(JSON.parse(json).message, '2 of 3')
+
+  // Listed as known, the miss no longer fails the run, and the badge is the same.
+  const known = capture()
+  assert.equal(await main(['--vectors', source, '--out', out, '--known', 'second-page'], stub, known), 0)
+  assert.ok(known.lines.includes('second-page: expected allowed, got disallowed (known)'))
+  assert.equal(readFileSync(join(out, SVG_FILE), 'utf8'), svg)
+  assert.equal(readFileSync(join(out, JSON_FILE), 'utf8'), json)
+})
+
+test('--check passes on files that match the run and fails on stale or missing ones, writing nothing', async () => {
+  const source = vectorsFile()
+  const out = tempDir()
+  assert.equal(await main(['--vectors', source, '--check', '--known', 'second-page', '--out', out], stub, capture()), 1)
+  assert.equal(existsSync(join(out, SVG_FILE)), false)
+  assert.equal(await main(['--vectors', source, '--known', 'second-page', '--out', out], stub, capture()), 0)
+  assert.equal(await main(['--vectors', source, '--known', 'second-page', '--out', out, '--check'], stub, capture()), 0)
+  // A parser that now reads every vector right makes the committed badge stale.
+  const io = capture()
+  assert.equal(await main(['--vectors', source, '--out', out, '--check'], (r, u, p) => p !== '/private', io), 1)
+  assert.ok(io.lines.some((l) => l.startsWith('out of date: ')))
+  assert.match(readFileSync(join(out, SVG_FILE), 'utf8'), />2 of 3</)
+  // Line ends a checkout turned into CRLF still match.
+  writeFileSync(join(out, JSON_FILE), readFileSync(join(out, JSON_FILE), 'utf8').replace(/\n/g, '\r\n'))
+  assert.equal(await main(['--vectors', source, '--known', 'second-page', '--out', out, '--check'], stub, capture()), 0)
+})
+
+test('an isAllowed that fails on every vector writes nothing and exits 2', async () => {
+  const out = tempDir()
+  const io = capture()
+  const broken = () => {
+    throw new Error('no parser here')
+  }
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', out], broken, io), 2)
+  assert.match(io.lines.join('\n'), /isAllowed failed on every vector, so no badge was written\. The first error: no parser here/)
+  assert.equal(existsSync(join(out, SVG_FILE)), false)
+  assert.equal(existsSync(join(out, JSON_FILE)), false)
+})
+
+test('an answer that is not true or false, or an error on one vector, counts as a miss', async () => {
+  const result = await measure(FILE.vectors, (r, u, path) => {
+    if (path === '/a') return undefined
+    if (path === '/b') throw new Error('parser crashed')
+    return Promise.resolve(false)
+  })
+  assert.equal(result.passed, 1)
+  assert.equal(result.errors, 2)
+  assert.deepEqual(
+    result.missed.map((m) => [m.id, m.error]),
+    [
+      ['open-page', 'isAllowed returned undefined, not true or false'],
+      ['second-page', 'parser crashed'],
+    ],
+  )
+})
+
+test('a known id that passes is reported, and an id the file lacks is named', async () => {
+  const io = capture()
+  const code = await main(['--vectors', vectorsFile(), '--out', tempDir(), '--known', 'open-page,no-such-vector', '--known', 'second-page'], stub, io)
+  assert.equal(code, 0)
+  assert.ok(io.lines.includes('open-page: now gives the expected result, so it can come off --known'))
+  assert.ok(io.lines.includes('--known no-such-vector: no vector in version 1.0.0 has this id'))
+})
+
+test('readVectors refuses a file this script cannot read', () => {
+  assert.deepEqual(readVectors(FILE), { version: '1.0.0', vectors: FILE.vectors })
+  assert.equal(readVectors({ ...FILE, version: '1.4.2' }).version, '1.4.2')
+  const refused = [
+    [null, /not a JSON object/],
+    [[], /not a JSON object/],
+    [{ ...FILE, version: 'v1' }, /no version such as 1\.0\.0/],
+    [{ ...FILE, version: '1.1234567.0' }, /no version such as 1\.0\.0/],
+    [{ ...FILE, version: '2.0.0' }, /reads version 1 of the vectors and the file is version 2\.0\.0\. Get the current script from https:/],
+    [{ ...FILE, vectors: [] }, /holds no vectors/],
+    [{ ...FILE, vectors: [{ ...FILE.vectors[0], expected: 'blocked' }] }, /vector 1 needs/],
+    [{ ...FILE, vectors: [{ ...FILE.vectors[0], path: 7 }] }, /vector 1 needs/],
+    [{ ...FILE, vectors: [FILE.vectors[0], FILE.vectors[0]] }, /the id open-page is used twice/],
+    // An id is printed at the start of a line, so a newline could pass for a CI command.
+    [{ ...FILE, vectors: [{ ...FILE.vectors[0], id: 'x\n::error title=x::injected' }] }, /vector 1 needs an id of lower-case letters/],
+    [{ ...FILE, vectors: [{ ...FILE.vectors[0], id: 'Open Page' }] }, /vector 1 needs an id/],
+    [{ ...FILE, vectors: [{ ...FILE.vectors[0], id: 'a'.repeat(101) }] }, /vector 1 needs an id/],
+  ]
+  for (const [data, message] of refused) assert.throws(() => readVectors(data), message)
+})
+
+let server
+let base
+let flaky = 0
+before(async () => {
+  server = createServer((req, res) => {
+    if (req.url === '/vectors.json') res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(FILE))
+    else if (req.url === '/flaky.json' && flaky++ === 0) res.writeHead(503).end()
+    else if (req.url === '/flaky.json') res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(FILE))
+    else res.writeHead(404).end()
+  })
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok))
+  base = `http://127.0.0.1:${server.address().port}`
+})
+after(() => server.close())
+
+test('the vectors load from a URL, and a URL that fails exits 2', async () => {
+  const io = capture()
+  assert.equal(await main(['--vectors', `${base}/vectors.json`, '--out', tempDir(), '--known', 'second-page'], stub, io), 0)
+  const missing = capture()
+  assert.equal(await main(['--vectors', `${base}/gone.json`, '--out', tempDir()], stub, missing), 2)
+  assert.match(missing.lines.join('\n'), /answered 404/)
+  // A 503 is asked again once, and the second answer counts.
+  assert.equal(await main(['--vectors', `${base}/flaky.json`, '--out', tempDir(), '--known', 'second-page'], stub, capture()), 0)
+  assert.equal(flaky, 2)
+  assert.equal(await main(['--vectors', join(tempDir(), 'none.json')], stub, capture()), 2)
+})
+
+test('a flag it does not know exits 2 before anything runs', async () => {
+  let calls = 0
+  const io = capture()
+  assert.equal(await main(['--out', tempDir(), '--force'], () => calls++ > -1, io), 2)
+  assert.equal(calls, 0)
+  assert.match(io.lines.join('\n'), /usage: node rfc9309-vectors-badge\.mjs/)
+})
+
+test('the SVG for 52 of 55 is the snapshot, byte for byte', () => {
+  const text = badgeText('1.0.0', 52, 55)
+  assert.deepEqual(text, { label: 'RFC 9309 vectors v1.0.0', message: '52 of 55' })
+  assert.equal(badgeSvg(text), read('tests/fixtures/rfc9309-vectors-badge.svg'))
+  assert.deepEqual(badgeLayout(text), { width: 229, height: 20, labelWidth: 164, messageWidth: 65, labelText: 152, messageText: 53 })
+  assert.equal(
+    endpointJson(text),
+    '{\n  "schemaVersion": 1,\n  "label": "RFC 9309 vectors v1.0.0",\n  "message": "52 of 55",\n  "labelColor": "27272a",\n  "color": "090a0c",\n  "style": "flat-square"\n}\n',
+  )
+})
+
+test('badge text is escaped in one pass, and text XML cannot carry is refused', () => {
+  assert.equal(escapeXml(`a<b>&"c'`), 'a&lt;b&gt;&amp;&quot;c&apos;')
+  // Escaped once: an entity in the input is escaped again, never decoded.
+  assert.equal(escapeXml('&lt;'), '&amp;lt;')
+  const svg = badgeSvg({ label: '<script>alert(1)</script>', message: '"x" & \'y\'' })
+  assert.ok(!svg.includes('<script'))
+  assert.ok(svg.includes('&lt;script&gt;alert(1)&lt;/script&gt;'))
+  assert.ok(svg.includes('aria-label="&lt;script&gt;alert(1)&lt;/script&gt;: &quot;x&quot; &amp; &apos;y&apos;"'))
+  assert.throws(() => escapeXml('bell\u0007'), /XML cannot carry/)
+})
+
+test('the badge says a version and a count, and nothing else', () => {
+  for (let passed = 0; passed <= 55; passed++) {
+    const { label, message } = badgeText('1.0.0', passed, 55)
+    assert.equal(label, 'RFC 9309 vectors v1.0.0')
+    assert.equal(message, `${passed} of 55`)
+  }
+  for (const [version, passed, total] of [['1.0', 1, 2], ['1.0.0', 3, 2], ['1.0.0', -1, 2], ['1.0.0', 1.5, 2], ['1.0.0', 0, 0]]) {
+    assert.throws(() => badgeText(version, passed, total))
+  }
+})
+
+test('isAllowed in this copy asks the matcher in src/robots.js', () => {
+  const robots = 'User-agent: *\nDisallow: /private\nAllow: /private/open\n'
+  assert.equal(isAllowed(robots, 'ExampleBot', '/private/x'), false)
+  assert.equal(isAllowed(robots, 'ExampleBot', '/private/open/y'), true)
+  assert.equal(isAllowed(robots, 'ExampleBot', '/'), true)
+})
+
+test('the committed badge is one the script writes, and the README shows it with its own text', () => {
+  const json = JSON.parse(read(`.github/badges/${JSON_FILE}`))
+  const text = { label: json.label, message: json.message }
+  const [, version] = /^RFC 9309 vectors v(\d+\.\d+\.\d+)$/.exec(text.label) ?? []
+  const [, passed, total] = /^(\d+) of (\d+)$/.exec(text.message) ?? []
+  assert.ok(version && passed && total, `${text.label} | ${text.message}`)
+  assert.deepEqual(badgeText(version, Number(passed), Number(total)), text)
+  assert.equal(read(`.github/badges/${SVG_FILE}`), badgeSvg(text))
+  assert.equal(read(`.github/badges/${JSON_FILE}`), endpointJson(text))
+  const img = `https://raw.githubusercontent.com/synapsereality/answer-crawler-check/main/.github/badges/${SVG_FILE}`
+  const readme = read('README.md')
+  const at = readme.indexOf(`[![${text.label}: ${text.message}](${img})](${PAGE_URL})`)
+  assert.ok(at >= 0, 'the README shows the committed badge with its own text')
+  assert.ok(readme.lastIndexOf('<!--', at) <= readme.lastIndexOf('-->', at), 'and not inside an HTML comment')
+  assert.ok(at < readme.indexOf('\n# '), 'in the badge row above the title')
+})
+
+test('an error on a --known vector still fails the run', async () => {
+  const crash = (r, u, path) => {
+    if (path === '/b') throw new Error('parser crashed\n::error::x')
+    return answers[path]
+  }
+  const io = capture()
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', tempDir(), '--known', 'second-page'], crash, io), 1)
+  // Reported without "(known)", and on one line whatever the parser's message held.
+  assert.ok(io.lines.includes('second-page: isAllowed failed: parser crashed ::error::x'))
+})
+
+test('a badge path that is not a file stops the run before anything is written', async () => {
+  const out = tempDir()
+  writeFileSync(join(out, SVG_FILE), 'old svg')
+  mkdirSync(join(out, JSON_FILE))
+  const io = capture()
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', out, '--known', 'second-page'], stub, io), 2)
+  assert.match(io.lines.join('\n'), /could not write the badge: .* is not a file/)
+  assert.equal(readFileSync(join(out, SVG_FILE), 'utf8'), 'old svg')
+})
+
+test('--check lets a badge that names an older patch release pass when the count is the same', async () => {
+  const out = tempDir()
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', out, '--known', 'second-page'], stub, capture()), 0)
+  // 1.0.1 fixes a reason and changes no result: the 1.0.0 badge still holds.
+  const patch = capture()
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.1' }), '--out', out, '--check', '--known', 'second-page'], stub, patch), 0)
+  assert.ok(patch.lines.some((l) => l.startsWith('the badge names vectors 1.0.0 and this run read 1.0.1, with the same count')))
+  // A new middle number adds vectors, so the badge is out of date.
+  const more = { ...FILE, version: '1.1.0', vectors: [...FILE.vectors, vector('third-page', '/c', 'allowed')] }
+  assert.equal(await main(['--vectors', vectorsFile(more), '--out', out, '--check', '--known', 'second-page'], (r, u, p) => p === '/c' || stub(r, u, p), capture()), 1)
+  // A badge that names a newer patch than the file it ran is out of date too.
+  const ahead = tempDir()
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.3' }), '--out', ahead, '--known', 'second-page'], stub, capture()), 0)
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.1' }), '--out', ahead, '--check', '--known', 'second-page'], stub, capture()), 1)
+  // A new middle number is out of date even when the count happens to be the same.
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.1.0' }), '--out', out, '--check', '--known', 'second-page'], stub, capture()), 1)
+  // So is a patch release whose count differs, which the versioning rules rule out but a file could still carry.
+  assert.equal(await main(['--vectors', vectorsFile({ ...FILE, version: '1.0.2' }), '--out', out, '--check'], (r, u, p) => p !== '/private', capture()), 1)
+})
+
+/** Runs a copy of the script whose isAllowed body is `body`, with Node itself. */
+async function runCopy(body, args) {
+  const dir = tempDir()
+  const source = read('scripts/rfc9309-vectors-badge.mjs')
+    .replace("import { allows, parseRobots } from '../src/robots.js'\n", '')
+    .replace('  return allows(parseRobots(robotsTxt), userAgent, path).allowed\n', `  ${body}\n`)
+  assert.ok(source.includes(body))
+  writeFileSync(join(dir, 'copy.mjs'), source)
+  const out = join(dir, 'out')
+  const result = await new Promise((done) => {
+    // The timeout turns a hang into a failure here, never a stuck CI job.
+    execFile(process.execPath, [join(dir, 'copy.mjs'), '--out', out, ...args], { timeout: 20_000 }, (err, stdout, stderr) =>
+      done({ code: err ? (err.killed ? 'killed' : err.code) : 0, stderr }),
+    )
+  })
+  return { ...result, wrote: existsSync(out) }
+}
+
+test('run as a script, an isAllowed that never answers exits 2 after --timeout and writes nothing', async () => {
+  // A promise that never settles, with nothing else keeping Node busy.
+  const idle = await runCopy('return new Promise(() => {})', ['--vectors', vectorsFile(), '--timeout', '0.5'])
+  assert.equal(idle.code, 2)
+  assert.match(idle.stderr, /isAllowed gave no answer for open-page within 0\.5 s, so no badge was written/)
+  assert.equal(idle.wrote, false)
+  // A promise that never settles while a timer keeps Node busy, which would otherwise hang.
+  const busy = await runCopy('return new Promise(() => { setInterval(() => {}, 1000) })', ['--vectors', vectorsFile(), '--timeout', '0.5'])
+  assert.equal(busy.code, 2)
+  assert.match(busy.stderr, /gave no answer for open-page/)
+  assert.equal(busy.wrote, false)
+})
+
+test('--timeout takes seconds above 0, and a thrown value that cannot be printed is still one miss', async () => {
+  for (const bad of ['0', '-1', 'soon', '1e3', '3601']) assert.equal(await main(['--vectors', vectorsFile(), '--timeout', bad], stub, capture()), 2, bad)
+  const odd = (r, u, path) => {
+    if (path === '/b') throw Object.create(null)
+    return answers[path]
+  }
+  const io = capture()
+  assert.equal(await main(['--vectors', vectorsFile(), '--out', tempDir()], odd, io), 1)
+  assert.ok(io.lines.includes('second-page: isAllowed failed: a value that cannot be printed'))
+  assert.ok(io.lines.includes('2 of 3 as expected, RFC 9309 vectors v1.0.0'))
+})
+
+test('a vectors path that is not a regular file, or is far too large, is refused before it is read', async () => {
+  const dir = tempDir()
+  const io = capture()
+  assert.equal(await main(['--vectors', dir, '--out', tempDir()], stub, io), 2)
+  assert.match(io.lines.join('\n'), /is not a file/)
+  const huge = join(tempDir(), 'huge.json')
+  writeFileSync(huge, '')
+  truncateSync(huge, 6 * 1024 * 1024)
+  const big = capture()
+  assert.equal(await main(['--vectors', huge, '--out', tempDir()], stub, big), 2)
+  assert.match(big.lines.join('\n'), /is over 5242880 bytes/)
+})
+
+test('a synchronous parser that answers late is still late, and the run stops', async () => {
+  const slow = () => {
+    const until = Date.now() + 30
+    while (Date.now() < until) {
+      // A parser busy for 30 ms, with no await for the timer to get in.
+    }
+    return true
+  }
+  await assert.rejects(measure(FILE.vectors, slow, 5), (err) => err instanceof NoAnswer && err.message === 'isAllowed gave no answer for open-page within 0.005 s')
+})
+
+test('a named pipe as the vectors file is refused at once instead of waited on', { skip: process.platform === 'win32' }, async () => {
+  const fifo = join(tempDir(), 'vectors.fifo')
+  execFileSync('mkfifo', [fifo])
+  const io = capture()
+  assert.equal(await main(['--vectors', fifo, '--out', tempDir()], stub, io), 2)
+  assert.match(io.lines.join('\n'), /vectors\.fifo is not a file/)
+})

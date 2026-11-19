@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/answer-crawler-check)](https://www.npmjs.com/package/answer-crawler-check)
 [![CI](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml/badge.svg)](https://github.com/synapsereality/answer-crawler-check/actions/workflows/ci.yml)
+[![RFC 9309 vectors v1.0.0: 52 of 55](https://raw.githubusercontent.com/synapsereality/answer-crawler-check/main/.github/badges/rfc9309-vectors-badge.svg)](https://synapsereality.io/open-source/answer-crawler-check/rfc9309-test-vectors/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Answer%20Crawler%20Check-2ea44f?logo=github)](https://github.com/marketplace/actions/answer-crawler-check)
 [![MIT licence](https://img.shields.io/badge/licence-MIT-blue)](https://github.com/synapsereality/answer-crawler-check/blob/main/LICENSE)
 
@@ -108,6 +109,33 @@ blocked.
 
 `--require-named` also fails any crawler that has no group of its own. Use it if
 your policy is to allow answer crawlers by name.
+
+## RFC 9309 test vectors
+
+The [RFC 9309 test vectors](https://synapsereality.io/open-source/answer-crawler-check/rfc9309-test-vectors/)
+are small robots.txt cases, each with the result the RFC gives. Some of them
+come from this tool's own tests. The `rfc9309-vectors` CI job runs them against
+`src/robots.js` on every push, with `scripts/rfc9309-vectors-badge.mjs`. The
+badge at the top shows how many give the expected result.
+
+The job fails when the badge no longer matches the run, or when a vector
+outside the known differences fails. The vectors page lists those differences.
+A percent-encoded letter such as `%70` is compared as written, and a line such
+as `Crawl-delay` ends a run of `User-agent` lines.
+
+After a change to the matcher or a new release of the vectors, refresh the
+badge with this command and commit the two files in `.github/badges/`. Change
+the badge's alt text at the top of this README to match, since a test checks
+it. The CI job runs the same command with `--check`, which also passes a badge
+that names an older patch release with the same count.
+
+```bash
+node scripts/rfc9309-vectors-badge.mjs --out .github/badges \
+  --known other-record-keeps-names-in-one-group-first,unreserved-escape-in-the-path,unreserved-escape-figure-4
+```
+
+The script works for any robots.txt parser. The vectors page shows how to put
+the same badge on yours.
 
 ## Options
 
@@ -328,9 +356,10 @@ No dependencies. Node 20 or later.
 npm test
 ```
 
-38 tests: the robots.txt rules above, sitemap indexes and gzip, the 4xx and 5xx
-cases, `--site-dir`, `--robots`, the CLI exit codes and the pre-commit hook.
-They use a local HTTP server.
+59 tests. They cover the robots.txt rules above, sitemap indexes and gzip, the
+4xx and 5xx cases, `--site-dir`, `--robots` and the CLI exit codes. The
+pre-commit hook and the badge script have tests too. They use a local HTTP
+server.
 
 ## What it doesn't check
 

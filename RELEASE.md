@@ -84,8 +84,9 @@ the workflow.
    In `CHANGELOG.md`, replace "not released yet" in the heading with the
    release date, in the form `## 0.1.3, 2026-11-17`. The release workflow's tests
    fail on a heading without a date. Commit and push.
-10. On GitHub: Releases, Draft a new release. Tag `v0.1.0` (create it on
-    publish), target `main`, title `v0.1.0`.
+10. On GitHub: Releases, Draft a new release. Tag `v` and the version in
+    `package.json`, such as `v0.1.4` (create it on publish), target `main`,
+    and the same text as the title.
 
    Under "Release Action", tick "Publish this Action to the GitHub
    Marketplace". The first time, the box is greyed out until you follow the
@@ -95,10 +96,11 @@ the workflow.
    taken on the Marketplace. If it is, change `name:` in `action.yml` and
    commit before you release. Click Publish release.
 11. The `release` workflow checks that the tag matches the version, runs the
-    tests and publishes with provenance. Check it under Actions, then:
+    tests and publishes with provenance. Check it under Actions, then run this
+    with the version you released:
 
     ```bash
-    npx answer-crawler-check@0.1.0 --version
+    npx answer-crawler-check@0.1.4 --version
     ```
 
 ## Zenodo DOI (optional for this repo, before the first release)

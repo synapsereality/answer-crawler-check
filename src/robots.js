@@ -109,12 +109,15 @@ export function parseRobots(text) {
 export function matches(pattern, path) {
   const anchored = pattern.endsWith('$')
   const end = anchored ? pattern.length - 1 : pattern.length
-  const first = pattern.indexOf('*')
-  if (first < 0) {
-    const p = pattern.slice(0, end)
-    return anchored ? path === p : path.startsWith(p)
+  // The first piece is compared as it is read, so a path that differs early
+  // is turned away early, however long the rule.
+  let first = 0
+  for (; first < end; first++) {
+    const c = pattern.charCodeAt(first)
+    if (c === 42) break
+    if (c !== path.charCodeAt(first)) return false
   }
-  if (!path.startsWith(pattern.slice(0, first))) return false
+  if (first === end) return !anchored || path.length === end
   const lastStar = pattern.lastIndexOf('*', end - 1)
   let at = first
   let i = first

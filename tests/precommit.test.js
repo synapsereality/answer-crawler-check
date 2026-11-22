@@ -60,5 +60,8 @@ test('package.json, CITATION.cff, --version and the README pins name one version
   // tests too, and there the entry must carry its date.
   const heading = read('CHANGELOG.md').match(/^## (\d+\.\d+\.\d+)(.*)$/m)
   assert.equal(heading?.[1], v, 'CHANGELOG.md has no entry for this version')
-  if (process.env.GITHUB_EVENT_NAME === 'release') assert.match(heading[2], /^, \d{4}-\d{2}-\d{2}$/, heading[0])
+  if (process.env.GITHUB_EVENT_NAME === 'release') {
+    const date = heading[2].match(/^, (\d{4}-\d{2}-\d{2})$/)?.[1]
+    assert.ok(date && new Date(`${date}T00:00:00Z`).toISOString().startsWith(date), heading[0])
+  }
 })

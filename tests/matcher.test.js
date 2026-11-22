@@ -116,8 +116,8 @@ test('random long pieces give the answer the 0.1.3 matcher gives', () => {
 test('rules with long text after a wildcard are answered quickly', () => {
   // The slow case of 0.1.3: one `*`, then 2,045 letters that almost match the
   // path. 0.1.3 took 196 ms for one such rule and 87.6 s for the 254 that fit
-  // in the 512 KiB the reader keeps. The new matcher takes about a millisecond
-  // for the whole file, so the one-second bound is generous.
+  // in the 512 KiB the reader keeps. The new matcher takes about 12 ms for the
+  // whole file, so the one-second bound is generous.
   const LONG = 2047
   const rule = `Disallow: /*${'a'.repeat(LONG - 2)}b`
   const rules = Math.floor((512 * 1024 - 14) / (rule.length + 1))
@@ -176,4 +176,27 @@ test('the pieces of one rule are found in order, each after the last', () => {
   assert.equal(matches(`/*${long}*${long}$`, `/x${long}${long}`), true)
   assert.equal(matches(`/*${long}*${long}$`, `/x${long}${long.slice(1)}`), false)
   assert.equal(matches(`/*${long}c`, `/${long}${long}c`), true)
+})
+
+test('a piece longer than 32 characters is never handed to indexOf', () => {
+  // The timing tests above pass on a fast machine even with indexOf, so this
+  // checks the choice itself. It records every indexOf call the matcher makes.
+  const real = String.prototype.indexOf
+  const needles = []
+  String.prototype.indexOf = function (needle, from) {
+    needles.push(String(needle).length)
+    return real.call(this, needle, from)
+  }
+  try {
+    const long = `aaaaab${'a'.repeat(600)}`
+    assert.equal(matches(`/*${long}`, `/${'a'.repeat(2047)}`), false)
+    assert.equal(matches(`/*${long}*x$`, `/${long}yx`), true)
+    assert.equal(matches(`/*${'a'.repeat(33)}`, `/b${'a'.repeat(33)}`), true)
+    assert.equal(matches('/*.pdf$', '/a/b.pdf'), true)
+    assert.equal(matches('/x*ab*cd', '/xzabzcd'), true)
+  } finally {
+    String.prototype.indexOf = real
+  }
+  assert.ok(needles.length > 0, 'short pieces still go to indexOf')
+  assert.ok(needles.every((n) => n <= 32), `indexOf got needles of ${needles.join(', ')} characters`)
 })

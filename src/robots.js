@@ -97,45 +97,31 @@ export function parseRobots(text) {
 
 /**
  * Does `pattern` match `path`? `*` matches any run of characters and a
- * trailing `$` anchors the end; otherwise a pattern is a prefix. Written as a
- * two-pointer walk, which cannot backtrack exponentially on a hostile file.
+ * trailing `$` anchors the end; otherwise a pattern is a prefix.
+ *
+ * The pattern is split on runs of `*`. The first piece must start the path.
+ * Each later piece is found with indexOf from where the previous one ended,
+ * and the leftmost place is always a safe choice, because a `*` before the
+ * next piece can take up any gap. With `$` the last piece must end the path,
+ * at or after that point. So a rule is checked in one pass along the path,
+ * with no going back to an earlier `*`.
  */
 export function matches(pattern, path) {
-  let p = pattern
-  const anchored = p.endsWith('$')
-  if (anchored) p = p.slice(0, -1)
-  else p += '*'
-  let pi = 0
-  let si = 0
-  let star = -1
-  let starS = 0
-  for (;;) {
-    if (pi === p.length) {
-      if (!anchored || si === path.length) return true
-      if (star >= 0 && starS < path.length) {
-        starS++
-        si = starS
-        pi = star + 1
-        continue
-      }
-      return false
-    }
-    const ch = p[pi]
-    if (ch === '*') {
-      star = pi
-      starS = si
-      pi++
-    } else if (si < path.length && ch === path[si]) {
-      pi++
-      si++
-    } else if (star >= 0 && starS < path.length) {
-      starS++
-      si = starS
-      pi = star + 1
-    } else {
-      return false
-    }
+  const anchored = pattern.endsWith('$')
+  const p = anchored ? pattern.slice(0, -1) : pattern
+  if (!p.includes('*')) return anchored ? path === p : path.startsWith(p)
+  const pieces = p.split(/\*+/)
+  const last = pieces.length - 1
+  if (!path.startsWith(pieces[0])) return false
+  let at = pieces[0].length
+  for (let i = 1; i < last; i++) {
+    const found = path.indexOf(pieces[i], at)
+    if (found < 0) return false
+    at = found + pieces[i].length
   }
+  const tail = pieces[last]
+  if (anchored) return path.length - tail.length >= at && path.endsWith(tail)
+  return path.indexOf(tail, at) >= 0
 }
 
 /**

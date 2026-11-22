@@ -63,7 +63,7 @@ async function main(argv) {
     return 0
   }
   if (v.version) {
-    console.log('answer-crawler-check 0.1.3')
+    console.log('answer-crawler-check 0.1.4')
     return 0
   }
 

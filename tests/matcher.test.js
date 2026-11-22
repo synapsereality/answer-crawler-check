@@ -114,10 +114,10 @@ test('random long pieces give the answer the 0.1.3 matcher gives', () => {
 })
 
 test('rules with long text after a wildcard are answered quickly', () => {
-  // The slow case of 0.1.3: one `*`, then 2,045 letters that almost match the
+  // The slow case of 0.1.3: one `*`, then 2,046 letters that almost match the
   // path. 0.1.3 took 196 ms for one such rule and 87.6 s for the 254 that fit
-  // in the 512 KiB the reader keeps. The new matcher takes about 12 ms for the
-  // whole file, so the one-second bound is generous.
+  // in the 512 KiB the reader keeps. The new matcher took 12 to 17 ms for the
+  // whole file in our runs, so the one-second bound is generous.
   const LONG = 2047
   const rule = `Disallow: /*${'a'.repeat(LONG - 2)}b`
   const rules = Math.floor((512 * 1024 - 14) / (rule.length + 1))
@@ -178,25 +178,32 @@ test('the pieces of one rule are found in order, each after the last', () => {
   assert.equal(matches(`/*${long}c`, `/${long}${long}c`), true)
 })
 
-test('a piece longer than 32 characters is never handed to indexOf', () => {
-  // The timing tests above pass on a fast machine even with indexOf, so this
-  // checks the choice itself. It records every indexOf call the matcher makes.
-  const real = String.prototype.indexOf
-  const needles = []
-  String.prototype.indexOf = function (needle, from) {
-    needles.push(String(needle).length)
-    return real.call(this, needle, from)
+test('the work on a path grows with its length, not with piece length times it', () => {
+  // The timing tests above can pass on a fast machine with a slow search, so
+  // this counts the work instead. The path is an object that charges each call
+  // by the characters it may have to compare: one per charCodeAt, the needle
+  // for startsWith and endsWith, and the needle times what is left for indexOf.
+  const counted = (s) => {
+    let work = 0
+    const path = {
+      length: s.length,
+      charCodeAt: (i) => { work++; return s.charCodeAt(i) },
+      startsWith: (x, at) => { work += x.length; return s.startsWith(x, at) },
+      endsWith: (x) => { work += x.length; return s.endsWith(x) },
+      indexOf: (x, at = 0) => { work += x.length * Math.max(1, s.length - at); return s.indexOf(x, at) },
+    }
+    return { path, work: () => work }
   }
-  try {
-    const long = `aaaaab${'a'.repeat(600)}`
-    assert.equal(matches(`/*${long}`, `/${'a'.repeat(2047)}`), false)
-    assert.equal(matches(`/*${long}*x$`, `/${long}yx`), true)
-    assert.equal(matches(`/*${'a'.repeat(33)}`, `/b${'a'.repeat(33)}`), true)
-    assert.equal(matches('/*.pdf$', '/a/b.pdf'), true)
-    assert.equal(matches('/x*ab*cd', '/xzabzcd'), true)
-  } finally {
-    String.prototype.indexOf = real
+  const cases = [
+    [`/*aaaaab${'a'.repeat(600)}`, `/${'a'.repeat(8191)}`, false],
+    [`/*${'a'.repeat(2045)}b`, `/${'a'.repeat(2046)}`, false],
+    [`/*${'a'.repeat(32)}b*${'a'.repeat(33)}$`, `/${'a'.repeat(2000)}b${'a'.repeat(2000)}`, true],
+    [`/*${'ab'.repeat(200)}c`, `/${'ab'.repeat(4000)}`, false],
+    [`/x*${'a'.repeat(33)}`, `/x${'a'.repeat(5000)}`, true],
+  ]
+  for (const [pattern, text, want] of cases) {
+    const { path, work } = counted(text)
+    assert.equal(matches(pattern, path), want, pattern.slice(0, 20))
+    assert.ok(work() <= 2 * (pattern.length + text.length) + 32 * text.length, `${pattern.slice(0, 20)}: ${work()} for a path of ${text.length}`)
   }
-  assert.ok(needles.length > 0, 'short pieces still go to indexOf')
-  assert.ok(needles.every((n) => n <= 32), `indexOf got needles of ${needles.join(', ')} characters`)
 })

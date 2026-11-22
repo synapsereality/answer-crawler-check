@@ -109,30 +109,30 @@ export function parseRobots(text) {
 export function matches(pattern, path) {
   const anchored = pattern.endsWith('$')
   const end = anchored ? pattern.length - 1 : pattern.length
-  // The first piece is compared as it is read, so a path that differs early
-  // is turned away early, however long the rule.
-  let first = 0
-  for (; first < end; first++) {
-    const c = pattern.charCodeAt(first)
+  // The rule is read forward, one piece at a time, so a piece that is not
+  // there ends the match before the rest of the rule is looked at.
+  let i = 0
+  for (; i < end; i++) {
+    const c = pattern.charCodeAt(i)
     if (c === 42) break
-    if (c !== path.charCodeAt(first)) return false
+    if (c !== path.charCodeAt(i)) return false
   }
-  if (first === end) return !anchored || path.length === end
-  const lastStar = pattern.lastIndexOf('*', end - 1)
-  let at = first
-  let i = first
+  if (i === end) return !anchored || path.length === end
+  let at = i
   for (;;) {
-    while (i < lastStar && pattern.charCodeAt(i) === 42) i++
-    if (i >= lastStar) break
+    while (i < end && pattern.charCodeAt(i) === 42) i++
+    if (i === end) return true
     const j = pattern.indexOf('*', i)
+    if (j < 0) {
+      // The last piece. With `$` it must end the path, at or after `at`.
+      if (anchored) return path.length - (end - i) >= at && path.endsWith(pattern.slice(i, end))
+      return find(pattern, i, end, path, at) >= 0
+    }
     const found = find(pattern, i, j, path, at)
     if (found < 0) return false
     at = found + (j - i)
     i = j
   }
-  const tail = lastStar + 1
-  if (anchored) return path.length - (end - tail) >= at && path.endsWith(pattern.slice(tail, end))
-  return tail === end || find(pattern, tail, end, path, at) >= 0
 }
 
 // A piece this short goes to indexOf. Even a naive search then costs at most
@@ -142,9 +142,9 @@ const SHORT = 32
 /**
  * Where `pattern.slice(from, to)` first occurs in `path` at or after `start`,
  * or -1. A longer piece is searched for with Knuth-Morris-Pratt, which reads
- * each character of the path once. String indexOf is not used for it: in V8
- * it slows to piece length times path length once the piece is longer than
- * about 250 characters.
+ * each character of the path once. String indexOf is not used for it: in V8,
+ * some pieces longer than about 250 characters make it slow to piece length
+ * times path length.
  */
 function find(pattern, from, to, path, start) {
   const m = to - from

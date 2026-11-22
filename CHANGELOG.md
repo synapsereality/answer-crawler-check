@@ -20,13 +20,13 @@ letters `a`. The same file is a test in `tests/matcher.test.js` now.
 
 | Case | 0.1.3 | 0.1.4 |
 |---|---|---|
-| That one rule, median of 21 runs | 196 ms | 0.30 ms |
-| 254 such rules in a 512 KiB file, median of 3 runs | 87.6 s | 12.5 ms |
+| That one rule, median of 21 runs | 196 ms | 0.29 ms |
+| 254 such rules, as many as fit in 512 KiB, median of 3 runs | 87.6 s | 16.0 ms |
 
 The matcher now takes the pieces between runs of `*` in order. The first piece
 must start the path. Each later piece is searched for from where the one before
-it ended. With a trailing `$`, the last piece must end the path. A piece longer
-than 32 characters is searched for with Knuth-Morris-Pratt, which reads each
+it ended. With a trailing `$`, the last piece must end the path. A search for
+a piece longer than 32 characters uses Knuth-Morris-Pratt, which reads each
 character of the path once. String `indexOf` is kept for short pieces only.
 On some pieces longer than about 250 characters, V8's `indexOf` slows to piece
 length times path length. So the time for a rule now grows with its length plus

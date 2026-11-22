@@ -82,7 +82,8 @@ the workflow.
    and `CITATION.cff`, the `--version` line in `bin/answer-crawler-check.js`
    and every pinned version in `README.md`. `npm test` fails if one is missed.
    In `CHANGELOG.md`, replace "not released yet" in the heading with the
-   release date. Commit and push.
+   release date, in the form `## 0.1.3, 2026-11-17`. The release workflow's tests
+   fail on a heading without a date. Commit and push.
 10. On GitHub: Releases, Draft a new release. Tag `v0.1.0` (create it on
     publish), target `main`, title `v0.1.0`.
 

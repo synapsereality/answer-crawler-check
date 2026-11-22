@@ -92,6 +92,27 @@ test('long repeated pieces give the answer the 0.1.3 matcher gives', () => {
   }
 })
 
+test('random long pieces give the answer the 0.1.3 matcher gives', () => {
+  // Pieces of 33 to 80 characters, past the length the matcher hands to
+  // indexOf, over two letters so that partial matches overlap a lot.
+  const next = rng(250)
+  const run = (n) => Array.from({ length: n }, () => (next() < 0.7 ? 'a' : 'b')).join('')
+  const N = 20_000
+  let hits = 0
+  for (let i = 0; i < N; i++) {
+    const pieces = Array.from({ length: 1 + Math.floor(next() * 3) }, () => run(33 + Math.floor(next() * 48)))
+    const dollar = next() < 0.4 ? '$' : ''
+    const pattern = `/*${pieces.join('*')}${dollar}`
+    let path = `/${pieces.map((p) => run(Math.floor(next() * 20)) + p).join('')}${next() < 0.5 ? run(Math.floor(next() * 5)) : ''}`
+    if (next() < 0.6) {
+      const at = 1 + Math.floor(next() * (path.length - 1))
+      path = path.slice(0, at) + (path[at] === 'a' ? 'b' : 'a') + path.slice(at + 1)
+    }
+    if (same(pattern, path)) hits++
+  }
+  assert.ok(hits > N / 10 && hits < N - N / 10, `${hits} of ${N} matched`)
+})
+
 test('rules with long text after a wildcard are answered quickly', () => {
   // The slow case of 0.1.3: one `*`, then 2,045 letters that almost match the
   // path. 0.1.3 took 196 ms for one such rule and 87.6 s for the 254 that fit
@@ -126,4 +147,33 @@ test('other shapes that made 0.1.3 retry are answered quickly', () => {
   for (let i = 0; i < 20; i++) for (const s of shapes) assert.equal(matches(s, path), false, s.slice(0, 20))
   const ms = Number(process.hrtime.bigint() - t) / 1e6
   assert.ok(ms < 1000, `${shapes.length * 20} matches took ${ms.toFixed(1)} ms`)
+})
+
+test('a piece longer than 250 characters is found in time linear in the path', () => {
+  // V8's indexOf slows to piece length times path length on a piece like this,
+  // which is why the matcher has its own search. Each file is 512 KiB of one
+  // rule. At 0.1.3 the first took 0.6 s, and with indexOf the last took 0.8 s.
+  const times = []
+  for (const [pathLength, pieceLength] of [[2048, 606], [4096, 1206], [8192, 2406]]) {
+    const rule = `Disallow: /*aaaaab${'a'.repeat(pieceLength - 6)}`
+    const rules = Math.floor((512 * 1024 - 14) / (rule.length + 1))
+    const robots = parseRobots(`User-agent: *\n${Array(rules).fill(rule).join('\n')}\n`)
+    const path = `/${'a'.repeat(pathLength - 1)}`
+    const t = process.hrtime.bigint()
+    assert.equal(allows(robots, 'ExampleBot', path).allowed, true)
+    assert.equal(allows(robots, 'ExampleBot', `/aaaaab${path.slice(1)}`).allowed, false)
+    times.push(Number(process.hrtime.bigint() - t) / 1e6)
+  }
+  assert.ok(times.every((ms) => ms < 1000), `${times.map((ms) => ms.toFixed(1)).join(', ')} ms`)
+})
+
+test('the pieces of one rule are found in order, each after the last', () => {
+  assert.equal(matches('/*ab*ab$', '/abab'), true)
+  assert.equal(matches('/*ab*ab$', '/aba'), false)
+  assert.equal(matches('/*aaa*aaa', '/aaaaa'), false)
+  assert.equal(matches('/*aaa*aaa', '/aaaaaa'), true)
+  const long = 'ab'.repeat(40)
+  assert.equal(matches(`/*${long}*${long}$`, `/x${long}${long}`), true)
+  assert.equal(matches(`/*${long}*${long}$`, `/x${long}${long.slice(1)}`), false)
+  assert.equal(matches(`/*${long}c`, `/${long}${long}c`), true)
 })

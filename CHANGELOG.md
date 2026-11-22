@@ -20,15 +20,17 @@ letters `a`. The same file is a test in `tests/matcher.test.js` now.
 
 | Case | 0.1.3 | 0.1.4 |
 |---|---|---|
-| That one rule, median of 21 runs | 196 ms | 0.033 ms |
-| 254 such rules in a 512 KiB file, median of 3 runs | 87.6 s | 0.93 ms |
+| That one rule, median of 21 runs | 196 ms | 0.29 ms |
+| 254 such rules in a 512 KiB file, median of 3 runs | 87.6 s | 12.1 ms |
 
-The matcher now splits a rule on its runs of `*`. The first piece must start
-the path, and each later piece is found with one forward search from where the
-one before it ended. With a trailing `$`, the last piece must end the path. So
-a rule is checked in one pass along the path, with no going back to an earlier
-`*`.
+The matcher now takes the pieces between runs of `*` in order. The first piece
+must start the path. Each later piece is searched for from where the one before
+it ended. With a trailing `$`, the last piece must end the path. A piece longer
+than 32 characters is searched for with Knuth-Morris-Pratt, which reads each
+character of the path once. String `indexOf` is kept for short pieces only,
+because in V8 it slows down on pieces longer than about 250 characters. So the
+time for a rule now grows with its length plus the path's.
 
 The answers are the same. A new test compares the new matcher with the 0.1.3
-one on 275,355 pairs of patterns and paths. The existing tests and the RFC 9309
-test vectors pass unchanged.
+one on 295,355 generated pairs of patterns and paths. The existing tests and
+the RFC 9309 test vectors pass unchanged.

@@ -14,6 +14,7 @@
     "src/",
     "data/",
     "action.yml",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE.md"
   ],

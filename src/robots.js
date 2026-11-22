@@ -97,45 +97,72 @@ export function parseRobots(text) {
 
 /**
  * Does `pattern` match `path`? `*` matches any run of characters and a
- * trailing `$` anchors the end; otherwise a pattern is a prefix. Written as a
- * two-pointer walk, which cannot backtrack exponentially on a hostile file.
+ * trailing `$` anchors the end; otherwise a pattern is a prefix.
+ *
+ * The pieces between runs of `*` are matched in order. The first piece must
+ * start the path. Each later piece is searched for from where the one before
+ * it ended, and the leftmost place is always a safe choice, because the `*`
+ * before the next piece can take up any gap. With `$` the last piece must end
+ * the path, at or after that point. Each search reads the path forward from
+ * there, so a rule costs time in proportion to its length plus the path's.
  */
 export function matches(pattern, path) {
-  let p = pattern
-  const anchored = p.endsWith('$')
-  if (anchored) p = p.slice(0, -1)
-  else p += '*'
-  let pi = 0
-  let si = 0
-  let star = -1
-  let starS = 0
-  for (;;) {
-    if (pi === p.length) {
-      if (!anchored || si === path.length) return true
-      if (star >= 0 && starS < path.length) {
-        starS++
-        si = starS
-        pi = star + 1
-        continue
-      }
-      return false
-    }
-    const ch = p[pi]
-    if (ch === '*') {
-      star = pi
-      starS = si
-      pi++
-    } else if (si < path.length && ch === path[si]) {
-      pi++
-      si++
-    } else if (star >= 0 && starS < path.length) {
-      starS++
-      si = starS
-      pi = star + 1
-    } else {
-      return false
-    }
+  const anchored = pattern.endsWith('$')
+  const end = anchored ? pattern.length - 1 : pattern.length
+  // The rule is read forward, one piece at a time, so a piece that is not
+  // there ends the match before the rest of the rule is looked at.
+  let i = 0
+  for (; i < end; i++) {
+    const c = pattern.charCodeAt(i)
+    if (c === 42) break
+    if (c !== path.charCodeAt(i)) return false
   }
+  if (i === end) return !anchored || path.length === end
+  let at = i
+  for (;;) {
+    while (i < end && pattern.charCodeAt(i) === 42) i++
+    if (i === end) return true
+    const j = pattern.indexOf('*', i)
+    if (j < 0) {
+      // The last piece. With `$` it must end the path, at or after `at`.
+      if (anchored) return path.length - (end - i) >= at && path.endsWith(pattern.slice(i, end))
+      return find(pattern, i, end, path, at) >= 0
+    }
+    const found = find(pattern, i, j, path, at)
+    if (found < 0) return false
+    at = found + (j - i)
+    i = j
+  }
+}
+
+// A piece this short goes to indexOf. Even a naive search then costs at most
+// SHORT character checks per path character.
+const SHORT = 32
+
+/**
+ * Where `pattern.slice(from, to)` first occurs in `path` at or after `start`,
+ * or -1. A longer piece is searched for with Knuth-Morris-Pratt, which reads
+ * each character of the path once. String indexOf is not used for it: in V8,
+ * some pieces longer than about 250 characters make it slow to piece length
+ * times path length.
+ */
+function find(pattern, from, to, path, start) {
+  const m = to - from
+  if (path.length - start < m) return -1
+  if (m <= SHORT) return path.indexOf(pattern.slice(from, to), start)
+  const back = new Int32Array(m)
+  for (let q = 1, k = 0; q < m; q++) {
+    const c = pattern.charCodeAt(from + q)
+    while (k > 0 && c !== pattern.charCodeAt(from + k)) k = back[k - 1]
+    if (c === pattern.charCodeAt(from + k)) k++
+    back[q] = k
+  }
+  for (let s = start, k = 0; s < path.length; s++) {
+    const c = path.charCodeAt(s)
+    while (k > 0 && c !== pattern.charCodeAt(from + k)) k = back[k - 1]
+    if (c === pattern.charCodeAt(from + k) && ++k === m) return s - m + 1
+  }
+  return -1
 }
 
 /**

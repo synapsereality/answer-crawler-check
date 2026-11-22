@@ -56,4 +56,12 @@ test('package.json, CITATION.cff, --version and the README pins name one version
   ]
   assert.ok(pins.some((m) => m[0].includes('rev:')), 'the README pins no pre-commit rev')
   for (const m of pins) assert.equal(m[1], v, m[0])
+  // The newest CHANGELOG entry is this version. The release workflow runs these
+  // tests too, and there the entry must carry its date.
+  const heading = read('CHANGELOG.md').match(/^## (\d+\.\d+\.\d+)(.*)$/m)
+  assert.equal(heading?.[1], v, 'CHANGELOG.md has no entry for this version')
+  if (process.env.GITHUB_EVENT_NAME === 'release') {
+    const date = heading[2].match(/^, (\d{4}-\d{2}-\d{2})$/)?.[1]
+    assert.ok(date && new Date(`${date}T00:00:00Z`).toISOString().startsWith(date), heading[0])
+  }
 })

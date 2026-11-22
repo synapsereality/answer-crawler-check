@@ -174,7 +174,7 @@ your build.
 ```yaml
 - uses: actions/checkout@v4
 - run: npm ci && npm run build
-- uses: synapsereality/answer-crawler-check@v0.1.3
+- uses: synapsereality/answer-crawler-check@v0.1.4
   with:
     sitemap: dist/sitemap-index.xml
     site-dir: dist
@@ -190,7 +190,7 @@ jobs:
   crawlers:
     runs-on: ubuntu-latest
     steps:
-      - uses: synapsereality/answer-crawler-check@v0.1.3
+      - uses: synapsereality/answer-crawler-check@v0.1.4
         with:
           sitemap: https://example.com/sitemap-index.xml
           require-named: "true"
@@ -219,7 +219,7 @@ answer-crawlers:
   script:
     - npm ci
     - npm run build
-    - npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist --json crawlers.json
+    - npx --yes answer-crawler-check@0.1.4 dist/sitemap-index.xml --site-dir dist --json crawlers.json
   artifacts:
     when: always
     paths:
@@ -237,7 +237,7 @@ answer-crawlers-live:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   script:
-    - npx --yes answer-crawler-check@0.1.3 https://example.com/sitemap-index.xml --require-named
+    - npx --yes answer-crawler-check@0.1.4 https://example.com/sitemap-index.xml --require-named
 ```
 
 ### Bitbucket Pipelines
@@ -254,13 +254,13 @@ pipelines:
         script:
           - npm ci
           - npm run build
-          - npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist
+          - npx --yes answer-crawler-check@0.1.4 dist/sitemap-index.xml --site-dir dist
   custom:
     answer-crawlers-live:
       - step:
           name: Check the live site
           script:
-            - npx --yes answer-crawler-check@0.1.3 https://example.com/sitemap-index.xml --require-named
+            - npx --yes answer-crawler-check@0.1.4 https://example.com/sitemap-index.xml --require-named
 ```
 
 A custom pipeline only runs when you start it or schedule it. To run
@@ -276,7 +276,7 @@ page in your live sitemap. In `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/synapsereality/answer-crawler-check
-    rev: v0.1.3
+    rev: v0.1.4
     hooks:
       - id: answer-crawler-check
         args: [--robots, public/robots.txt, https://example.com/sitemap.xml]
@@ -313,14 +313,14 @@ command and reads its exit code. You need Node 20 or later.
 
 ```bash
 npm run build
-npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist
+npx --yes answer-crawler-check@0.1.4 dist/sitemap-index.xml --site-dir dist
 ```
 
 To tell a blocked crawler apart from a check that couldn't run:
 
 ```bash
 status=0
-npx --yes answer-crawler-check@0.1.3 dist/sitemap-index.xml --site-dir dist || status=$?
+npx --yes answer-crawler-check@0.1.4 dist/sitemap-index.xml --site-dir dist || status=$?
 case $status in
   0) echo "every answer crawler can reach every page" ;;
   1) echo "a crawler is blocked, or the check hit a problem. See the output above."; exit 1 ;;
